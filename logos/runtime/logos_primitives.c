@@ -526,6 +526,20 @@ static int _is_single_char_str(logos_env *env, logos_term t, char *out) {
     return 1;
 }
 
+/* ── Dynamic fact assertion ──────────────────────────────────────────────── */
+
+int logos_prim_assert_fact(logos_env *env, logos_term subject,
+                            logos_term predicate, logos_term value) {
+    subject   = logos_walk(env, subject);
+    predicate = logos_walk(env, predicate);
+    value     = logos_walk(env, value);
+    if (subject.tag != LOGOS_STRING || predicate.tag != LOGOS_STRING) return 0;
+    logos_graph_assert(env->graph, subject.s, predicate.s, value, 1.0);
+    return 1;
+}
+
+/* ── Character class predicates ──────────────────────────────────────────── */
+
 int logos_prim_char_alpha(logos_env *env, logos_term c) {
     char ch; return _is_single_char_str(env, c, &ch) && isalpha((unsigned char)ch);
 }

@@ -57,6 +57,8 @@ PRIMITIVES: dict[str, tuple[int, str]] = {
     "is-number":    (1, "logos_prim_is_number"),
     "is-list":      (1, "logos_prim_is_list"),
     "ground":       (1, "logos_prim_ground"),
+    # Dynamic fact assertion
+    "assert-fact":  (3, "logos_prim_assert_fact"),
     # String primitives
     "str-concat":      (3, "logos_prim_str_concat"),
     "str-length":      (2, "logos_prim_str_length"),
@@ -89,6 +91,15 @@ def _c_id(name: str) -> str:
 def _esc(s: str) -> str:
     """Escape a Python string for embedding in a C string literal."""
     return s.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+
+
+def _csep(middle: str) -> str:
+    """Return ', middle' when middle is non-empty, else empty string.
+
+    Used to splice optional parameter/argument lists into C signatures and
+    call sites without generating spurious double-commas for zero-arity rules.
+    """
+    return f", {middle}" if middle else ""
 
 
 # ── Compiler ──────────────────────────────────────────────────────────────────
@@ -169,11 +180,11 @@ class Compiler:
             param_str  = self._pred_param_decl(first_rule)
             lines.append(
                 f"static int rule_{_c_id(pred)}_0"
-                f"(logos_env *env, {param_str}, logos_cont k);"
+                f"(logos_env *env{_csep(param_str)}, logos_cont k);"
             )
             lines.append(
                 f"int pred_{_c_id(pred)}"
-                f"(logos_env *env, {param_str}, logos_cont k);"
+                f"(logos_env *env{_csep(param_str)}, logos_cont k);"
             )
         lines.append("")
         return "\n".join(lines)
@@ -235,12 +246,12 @@ class Compiler:
             param_decl = self._pred_param_decl(first_rule)
             param_pass = self._pred_param_pass(first_rule)
             lines = [
-                f"int pred_{cname}(logos_env *env, {param_decl}, logos_cont k) {{",
+                f"int pred_{cname}(logos_env *env{_csep(param_decl)}, logos_cont k) {{",
             ]
             for idx, _rule in clauses:
                 lines.append(f"    {{ logos_mark_t _m = logos_mark(env);")
                 lines.append(
-                    f"    if (rule_{cname}_{idx}(env, {param_pass}, k))"
+                    f"    if (rule_{cname}_{idx}(env{_csep(param_pass)}, k))"
                     f" {{ logos_undo(env, _m); return 1; }}"
                 )
                 lines.append(f"    logos_undo(env, _m); }}")
@@ -398,7 +409,7 @@ class Compiler:
                 "        env.capture_found = &_found;",
                 "        env.capture_conf  = &_conf;",
                 "        env.confidence    = 1.0;",
-                f"        pred_{cname}(&env, {arg_exprs}, k_bool_capture);",
+                f"        pred_{cname}(&env{_csep(arg_exprs)}, k_bool_capture);",
                 f'        logos_print_bool_result("{_esc(text)}", _found, _conf);',
             ]
 
@@ -483,7 +494,7 @@ class Compiler:
             "                env.capture_found = &_found;",
             "                env.capture_conf  = &_conf;",
             "                env.confidence    = 1.0;",
-            f"                pred_{cname}(&env, {arg_exprs}, k_bool_capture);",
+            f"                pred_{cname}(&env{_csep(arg_exprs)}, k_bool_capture);",
             "                if (_found) {",
             f"                    const char *_vnames[{nv}] = {vnames_lit};",
             f"                    logos_term   _vals[{nv}]   = {vals_lit};",
@@ -676,7 +687,7 @@ class RuleEmitter:
         )
         lines = [
             f"static int rule_{cname}_{self.idx}"
-            f"(logos_env *env, {param_str}, logos_cont k) {{",
+            f"(logos_env *env{_csep(param_str)}, logos_cont k) {{",
         ]
         for bv in self._body_vars:
             lines.append(f"    logos_term var_{_c_id(bv)} = logos_alloc_var(env);")
@@ -779,7 +790,7 @@ class RuleEmitter:
 
         lines = [
             f"static int rule_{pred_cname}_{self.idx}"
-            f"(logos_env *env, {param_str}, logos_cont k) {{",
+            f"(logos_env *env{_csep(param_str)}, logos_cont k) {{",
         ]
         for bv in self._body_vars:
             lines.append(f"    logos_term var_{_c_id(bv)} = logos_alloc_var(env);")
@@ -816,7 +827,7 @@ class RuleEmitter:
             f"    {{",
             f"        {ctx}_t _ctx_{idx} = {{ {ctx_inits}, k, env->cont_ctx }};",
             f"        env->cont_ctx = &_ctx_{idx};",
-            f"        int _r_{idx} = pred_{pred_cname}(env, {arg_exprs}, {cont_func});",
+            f"        int _r_{idx} = pred_{pred_cname}(env{_csep(arg_exprs)}, {cont_func});",
             f"        env->cont_ctx = _ctx_{idx}.prev_ctx;",
             f"        return _r_{idx};",
             f"    }}",
@@ -931,7 +942,7 @@ class RuleEmitter:
             f"        logos_mark_t _pm_{idx} = logos_mark(env);",
             f"        env->capture_found = &_pc_found_{idx};",
             f"        env->capture_conf  = &_pc_conf_{idx};",
-            f"        pred_{cname}(env, {arg_exprs}, k_bool_capture);",
+            f"        pred_{cname}(env{_csep(arg_exprs)}, k_bool_capture);",
             f"        logos_undo(env, _pm_{idx});",
             f"        env->capture_found = _pf_{idx};",
             f"        env->capture_conf  = _pc_{idx};",
@@ -962,7 +973,7 @@ class RuleEmitter:
             f"        logos_mark_t _nm_{idx} = logos_mark(env);",
             f"        env->capture_found = &_naf_found_{idx};",
             f"        env->capture_conf  = &_naf_conf_{idx};",
-            f"        pred_{cname}(env, {arg_exprs}, k_bool_capture);",
+            f"        pred_{cname}(env{_csep(arg_exprs)}, k_bool_capture);",
             f"        logos_undo(env, _nm_{idx});",
             f"        env->capture_found = _pf_{idx};",
             f"        env->capture_conf  = _pc_{idx};",

@@ -84,6 +84,11 @@ int logos_prim_str_lower(logos_env *env, logos_term s, logos_term l);
 int logos_prim_str_trim(logos_env *env, logos_term s, logos_term t);
 int logos_prim_str_contains(logos_env *env, logos_term s, logos_term sub);
 
+/* ── Dynamic fact assertion ─────────────────────────────────────────────── */
+/* assert-fact(Subject, Predicate, Value) : asserts a new fact at runtime */
+int logos_prim_assert_fact(logos_env *env, logos_term subject,
+                            logos_term predicate, logos_term value);
+
 /* ── Character class predicates ─────────────────────────────────────────── */
 int logos_prim_char_alpha(logos_env *env, logos_term c);
 int logos_prim_char_digit(logos_env *env, logos_term c);
