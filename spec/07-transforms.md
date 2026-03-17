@@ -1,8 +1,10 @@
 # 07 — Transforms
 
+> **Implementation Status:** Transform declarations are parsed by the runtime, but transform invocation (execution) is **not yet implemented**. The transform body is not evaluated. This chapter describes the intended design. Syntax and semantics described here are subject to change as the executor is built.
+
 ## Overview
 
-A **transform** is a declarative, function-like construct that specifies *what* a computation should produce and under what constraints, without prescribing *how* to produce it. The executor converts a transform invocation into an inference problem and resolves it against the current semantic graph.
+A **transform** is a declarative, function-like construct that specifies *what* a computation should produce and under what constraints, without prescribing *how* to produce it. When implemented, the executor will convert a transform invocation into an inference problem and resolve it against the current semantic graph.
 
 Transforms differ from functions in a conventional language in a fundamental way: a function is a procedure that runs deterministically and returns a value. A transform is a specification of a desired output, annotated with intent, constraints, and optimization objectives. The executor is free to choose any inference strategy that satisfies those constraints.
 

@@ -17,14 +17,12 @@ The model has three levels of sophistication:
 The `ConfidenceValue` type is the internal representation of a confidence annotation.
 
 ```logos
-type ConfidenceValue IS-A Entity
-  fields:
-    estimate: Float        // point estimate in [0.0, 1.0]
-    ci95-lower: Float?     // lower bound of 95% credible interval
-    ci95-upper: Float?     // upper bound of 95% credible interval
-    distribution: Text?    // distribution family name
-    params: {Text: Float}? // distribution parameters
-    is-absolute: Boolean   // true iff this is a Dirac delta at 1.0
+ConfidenceValue (Entity):
+  estimate: Float           // point estimate in [0.0, 1.0]
+  ci95-lower: Optional<Float>   // lower bound of 95% credible interval
+  ci95-upper: Optional<Float>   // upper bound of 95% credible interval
+  distribution: Optional<Text>  // distribution family name
+  is-absolute: Boolean      // true iff this is a Dirac delta at 1.0
 ```
 
 When `is-absolute` is `true`, the value represents **epistemic certainty** — not just high probability, but the absence of any probability mass anywhere except at 1.0. This is distinct from `estimate: 0.9999`: absolute confidence is a Dirac delta, not a point mass near 1.
@@ -337,10 +335,9 @@ This treats each source as an independent "vote" for the fact. Three sources eac
 Sources may have declared trust levels. Confidence can be weighted by source trust before combination:
 
 ```logos
-type Source IS-A Entity
-  fields:
-    name: Text
-    trust-level: Float    // 0.0 to 1.0
+Source (Entity):
+  name: Text
+  trust-level: Float    // 0.0 to 1.0
 ```
 
 Weighted confidence: `effective_confidence = raw_confidence × trust_level`.

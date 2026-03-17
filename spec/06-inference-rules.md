@@ -41,7 +41,7 @@ NegationCondition  ::= 'not' ':' Condition
 
 DisjunctionCondition ::= 'or' ':' NEWLINE BLOCK-START ConditionList BLOCK-END
 
-TypeCondition      ::= Var '::' TypeName NEWLINE
+TypeCondition      ::= Var '::' TypeName NEWLINE   // Planned (not yet implemented)
 
 CompOp  ::= '==' | '!=' | '<' | '<=' | '>' | '>='
 ```
@@ -101,7 +101,7 @@ SLD-resolution (Selective Linear Definite-clause resolution) is a form of top-do
 
 1. **Goal selection:** Select the leftmost unsolved goal: `can-vote(alice)`.
 2. **Rule matching:** Find all rules whose head unifies with `can-vote(alice)`. In this case: the `can-vote(P)` rule, with unification `P = alice`.
-3. **Subgoal expansion:** Replace the goal with the rule's body conditions: `alice :: Person`, `age of alice >= 18 years`, `nationality of alice == "American"`.
+3. **Subgoal expansion:** Replace the goal with the rule's body conditions: `alice.age >= 18 years`, `alice.nationality = "American"`.
 4. **Recursive proof:** Prove each subgoal in order. For `age of alice >= 18 years`, look up `age of alice` in the knowledge base.
 5. **Success:** If all subgoals succeed, the original goal succeeds. Collect the variable bindings and confidence.
 6. **Backtracking:** If any subgoal fails, backtrack to the most recent choice point (another applicable rule) and try the next alternative.
@@ -493,8 +493,9 @@ find count(P) where can-vote(P)
 // Average age of voters
 find avg(age of P) where can-vote(P)
 
-// Maximum salary among executives
-find max(salary of E) where E :: Executive
+// Maximum salary among executives (requires executive to have a salary binding)
+find max(salary of E) where
+  salary of E = _   // matches all entities with a salary field
 ```
 
 Supported aggregation functions: `count`, `sum`, `avg`, `min`, `max`, `list`, `set`.
@@ -520,7 +521,6 @@ is-ancestor(X, Y) if:
 ```logos
 // Total number of reports under an executive (recursive)
 report-count of E := 1 + sum(report-count of R) if:
-  E :: Executive
   reports-to of R == E
 ```
 
@@ -543,7 +543,7 @@ Logos provides a set of built-in predicates available without declaration:
 
 | Predicate | Description |
 |-----------|-------------|
-| `X :: T` | X is ascribed type T (or a subtype of T) |
+| `X :: T` | X is ascribed type T (or a subtype of T) — **Planned (not yet implemented)** |
 | `X == Y` | X and Y are equal |
 | `X != Y` | X and Y are not equal |
 | `X < Y` | X is less than Y |
@@ -580,20 +580,20 @@ Felon (Person):
   sentence-completed: Boolean
 
 // Base facts
-name of alice       := { first: "Alice", last: "Smith" }
+name of alice          := "Alice Smith"
 date-of-birth of alice := @1994-03-15
-nationality of alice := "American"
-alice :: RegisteredVoter
+nationality of alice   := "American"
 registration-date of alice := @2012-09-01
 registration-state of alice := "IL"
 
-name of bob       := { first: "Bob", last: "Jones" }
-date-of-birth of bob := @2009-11-20 [confidence: 0.85]
-nationality of bob := "American"
+name of bob          := "Bob Jones"
+date-of-birth of bob := @2009-11-20
+  confidence: 0.85
+nationality of bob   := "American"
 
-name of carlos    := { first: "Carlos", last: "Reyes" }
+name of carlos          := "Carlos Reyes"
 date-of-birth of carlos := @1978-05-10
-nationality of carlos := "Mexican"
+nationality of carlos   := "Mexican"
 
 // Inference rules
 age-as-of-today(P, Age) [trusted: true] if:
@@ -636,7 +636,7 @@ alice [confidence: 0.970]
         ← 31 years >= 18 years [absolute]
     ← is-citizen(alice, "American") [confidence: 0.990]
         ← nationality of alice = "American" [absolute]
-    ← not: alice :: Felon → succeeded (no Felon ascription found) [absolute]
+    ← not: felon(alice) → succeeded (no conviction-date found) [absolute]
 
 1 result(s). bob excluded: age confidence 0.85 → voting-eligible confidence 0.73 < threshold 0.75.
 carlos excluded: nationality is "Mexican", not "American".

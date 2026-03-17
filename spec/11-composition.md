@@ -1,5 +1,7 @@
 # 11 — Composition and Modules
 
+> **Implementation Status:** The module system described in this chapter is **planned but not yet implemented**. The current runtime (v0.1) executes a single file at a time. `import` statements are not yet supported.
+
 ## Overview
 
 Logos programs are composed from **modules** — named units of source code, each occupying its own file. Modules encapsulate fact schemas, rules, transforms, contexts, and type declarations. The `import` statement pulls declarations from another module into the current one, enabling code reuse, namespace isolation, and controlled sharing of the semantic graph.

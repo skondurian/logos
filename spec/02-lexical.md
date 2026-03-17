@@ -27,12 +27,12 @@ Blank lines (lines containing only whitespace) are ignored by the lexer. They do
 
 ```logos
 // 2-space indentation
-type Person IS-A Entity
-  fields:          // indented 2 spaces → BLOCK-START
-    name: HumanName  // indented 4 spaces → nested BLOCK-START
-    age: Duration
-                   // blank line ignored
-type Animal IS-A Entity  // back to column 0 → two BLOCK-ENDs
+Person (Entity):  // BLOCK-START follows the colon
+  name: HumanName   // indented 2 spaces
+  age: Duration
+
+Animal (Entity):  // back to column 0 → previous BLOCK-END, new BLOCK-START
+  lifespan: Duration
 ```
 
 ## 3. Line Continuation
@@ -382,10 +382,11 @@ display-name of alice := (nickname of alice | name of alice | "Unknown")
 
 | Operator | Meaning |
 |----------|---------|
-| `IS-A` | Type inheritance declaration |
-| `::` | Type ascription (assert that an entity has a type) |
+| `(Parent)` | Type inheritance — parent list in parens after type name |
+| `::` | Type ascription — **Planned (not yet implemented)** |
 
 ```logos
+// Planned syntax — not yet implemented:
 alice :: Person
 ```
 

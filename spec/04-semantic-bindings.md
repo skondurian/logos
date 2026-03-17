@@ -393,10 +393,13 @@ The provenance fields of a binding are themselves queryable using the same `fiel
 ### 10.3 Pattern Query
 
 ```logos
-find age of P where P :: Person
+find age of P where
+  P.age = _   // matches all entities that have an age field
 ```
 
-Returns all `(P, age)` pairs where P is a Person.
+Returns all `(P, age)` pairs where P has an `age` binding.
+
+> **Planned (not yet implemented):** The `P :: Person` type filter in queries (`find age of P where P :: Person`) depends on the type ascription feature and is not yet supported.
 
 ### 10.4 Confidence-Filtered Query
 
