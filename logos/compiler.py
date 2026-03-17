@@ -131,7 +131,9 @@ def compile_file(
 def _run_cc(c_path: str, output_path: str, cc: str, runtime_path: str) -> None:
     """Invoke the C compiler and raise CompilationError on failure."""
     runtime_dir = str(Path(runtime_path).parent)
-    cmd = [cc, c_path, runtime_path, f"-I{runtime_dir}", "-o", output_path, "-O2"]
+    primitives_path = str(Path(runtime_path).parent / "logos_primitives.c")
+    cmd = [cc, c_path, runtime_path, primitives_path,
+           f"-I{runtime_dir}", "-o", output_path, "-O2", "-lm"]
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         raise CompilationError(

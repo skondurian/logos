@@ -80,6 +80,7 @@ typedef struct logos_env {
     double         confidence;    /* accumulated per proof path */
     void          *capture_found; /* int*    — set to 1 on any success */
     void          *capture_conf;  /* double* — accumulates via logos_disjoin */
+    void          *cont_ctx;      /* current CPS continuation context */
 } logos_env;
 
 /* ── Scan callback ──────────────────────────────────────────────────────────── */
