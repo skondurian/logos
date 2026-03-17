@@ -1,0 +1,18 @@
+// 03_uncertain_location.logos
+// Demonstrates fallback chains and confidence propagation.
+
+// Primary location source (GPS) — not available (omitted)
+// Fallback to last-known location
+location of device := "37.7749,-122.4194"
+  confidence: 0.6
+  provenance: "last-known-gps"
+
+// IP geolocation fallback (lower confidence)
+ip-location of device := "37.0,-122.0"
+  confidence: 0.3
+  provenance: "ip-geolocation"
+
+// A fact with high confidence
+status of device := "active"
+  confidence: absolute
+  provenance: "heartbeat"

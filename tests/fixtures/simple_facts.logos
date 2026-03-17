@@ -1,0 +1,8 @@
+// Simple fact fixture for testing
+name of fixture-entity := "Test Entity"
+  confidence: absolute
+  provenance: "fixture"
+
+score of fixture-entity := 0.9
+  confidence: 0.95
+  provenance: "computed"

@@ -1,0 +1,45 @@
+// 02_voting_rules.logos
+// Demonstrates inference rules, backchaining, and boolean queries.
+
+Person:
+  name: HumanName
+  age: Duration
+  citizenship: Text
+
+// Facts about alice
+age of alice := 30 years
+  confidence: absolute
+  provenance: "birth-record"
+
+citizenship of alice := "US"
+  confidence: absolute
+  provenance: "passport"
+
+// Facts about bob (too young)
+age of bob := 17 years
+  confidence: absolute
+  provenance: "birth-record"
+
+citizenship of bob := "US"
+  confidence: absolute
+  provenance: "passport"
+
+// Facts about carol (not a citizen)
+age of carol := 25 years
+  confidence: absolute
+  provenance: "birth-record"
+
+citizenship of carol := "CA"
+  confidence: absolute
+  provenance: "passport"
+
+// Inference rule
+can-vote(P) if:
+  P.age >= 18 years
+  P.citizenship = "US"
+
+// Queries
+query: can-vote(alice)?
+query: can-vote(bob)?
+query: can-vote(carol)?
+find P where can-vote(P)

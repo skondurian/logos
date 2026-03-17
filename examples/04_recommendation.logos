@@ -1,0 +1,33 @@
+// 04_recommendation.logos
+// Transform declaration example.
+
+Person:
+  name: HumanName
+
+Product:
+  name: Text
+  category: Text
+
+// User data
+name of alice := "Alice"
+  confidence: absolute
+
+// Product catalog
+name of widget-a := "Widget A"
+  confidence: absolute
+
+category of widget-a := "gadgets"
+  confidence: absolute
+
+name of widget-b := "Widget B"
+  confidence: absolute
+
+category of widget-b := "tools"
+  confidence: absolute
+
+// Transform (declarative recommendation)
+transform recommend [user: Person] → Set<Product>:
+  intent: "maximize user satisfaction"
+  considering: user.history, user.preferences
+  maximize: relevance
+  require: confidence > 0.7

@@ -1,0 +1,26 @@
+// 05_contexts.logos
+// Demonstrates context declarations and context-scoped facts.
+
+context Production:
+  confidence-threshold: 0.99
+  error-tolerance: zero
+
+context Development:
+  confidence-threshold: 0.5
+  error-tolerance: high
+
+// High-confidence fact — visible in Production
+temperature of sensor-1 := 72.4
+  confidence: 0.99
+  provenance: "calibrated-sensor"
+  context: Production
+
+// Lower-confidence fact — only usable in Development
+temperature of sensor-2 := 68.0
+  confidence: 0.7
+  provenance: "uncalibrated-sensor"
+  context: Development
+
+// Rule that relies on sensor data
+is-overheating(S) if:
+  S.temperature > 100.0

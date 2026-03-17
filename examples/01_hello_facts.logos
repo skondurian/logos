@@ -1,0 +1,22 @@
+// 01_hello_facts.logos
+// Basic fact assertion and retrieval.
+
+Person:
+  name: HumanName
+  age: Duration
+
+name of alice := "Alice Nakamura"
+  confidence: absolute
+  provenance: "birth-record"
+
+age of alice := 30 years
+  confidence: absolute
+  provenance: "birth-record"
+
+name of bob := "Bob Chen"
+  confidence: absolute
+  provenance: "user-input"
+
+age of bob := 17 years
+  confidence: absolute
+  provenance: "user-input"

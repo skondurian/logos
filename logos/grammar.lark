@@ -1,0 +1,184 @@
+// Logos Grammar — Lark EBNF (SPECIFICATION REFERENCE ONLY)
+//
+// This file is NOT used at runtime. The production parser is the hand-written
+// recursive descent parser in parser.py, which handles indentation-sensitive
+// syntax via synthetic INDENT/DEDENT tokens injected by lexer.py.
+//
+// This grammar is the authoritative structural specification and can be used
+// with Lark for experimentation, but requires a custom indenter plugin to
+// handle INDENT/DEDENT correctly.
+
+start: statement*
+
+statement: type_decl
+         | semantic_binding
+         | retraction
+         | inference_rule
+         | transform_decl
+         | context_decl
+         | query_stmt
+         | import_stmt
+         | NEWLINE
+
+// ─── Type declarations ────────────────────────────────────────────────────────
+
+type_decl: type_name ":" NEWLINE INDENT field_decl+ DEDENT
+         | type_name ":" parent_list NEWLINE INDENT field_decl+ DEDENT
+         | type_name ":" parent_list NEWLINE
+
+parent_list: "(" type_name ("," type_name)* ")"
+
+field_decl: IDENTIFIER ":" type_expr NEWLINE
+
+type_expr: type_name ("<" type_expr_list ">")?
+         | "Set" "<" type_expr ">"
+         | "List" "<" type_expr ">"
+         | "Optional" "<" type_expr ">"
+
+type_expr_list: type_expr ("," type_expr)*
+
+type_name: IDENTIFIER
+
+// ─── Semantic bindings ────────────────────────────────────────────────────────
+
+semantic_binding: path ":=" value NEWLINE annotations?
+                | path ":=" value annotations?
+
+path: atom ("." IDENTIFIER)*
+    | IDENTIFIER "of" atom
+
+annotations: INDENT annotation+ DEDENT
+
+annotation: "confidence" ":" confidence_value NEWLINE
+          | "provenance" ":" STRING NEWLINE
+          | "fallback" ":" path NEWLINE confidence_annotation?
+          | "context" ":" IDENTIFIER NEWLINE
+
+confidence_annotation: "[" "confidence" ":" NUMBER "]"
+
+confidence_value: "absolute"
+                | NUMBER
+                | "[" NUMBER "," NUMBER "]"
+
+retraction: "retract" ":" path NEWLINE
+
+// ─── Fallback chains ──────────────────────────────────────────────────────────
+
+fallback_chain: path ("|" "fallback" ":" path confidence_annotation?)+ NEWLINE
+
+// ─── Values ───────────────────────────────────────────────────────────────────
+
+value: duration_lit
+     | number_lit
+     | string_lit
+     | bool_lit
+     | set_lit
+     | list_lit
+     | atom
+     | arith_expr
+     | fallback_chain
+
+duration_lit: NUMBER duration_unit
+duration_unit: "years" | "year" | "months" | "month" | "days" | "day"
+             | "hours" | "hour" | "minutes" | "minute" | "seconds" | "second"
+
+number_lit: NUMBER
+string_lit: STRING
+bool_lit: "true" | "false" | "True" | "False"
+set_lit: "{" (value ("," value)*)? "}"
+list_lit: "[" (value ("," value)*)? "]"
+
+atom: IDENTIFIER ("." IDENTIFIER)*
+    | IDENTIFIER
+
+arith_expr: value arith_op value
+arith_op: "+" | "-" | "*" | "/" | ">=" | "<=" | ">" | "<" | "=" | "!="
+
+// ─── Inference rules ──────────────────────────────────────────────────────────
+
+inference_rule: rule_head "if" ":" NEWLINE INDENT condition+ DEDENT
+
+rule_head: predicate_call
+
+condition: predicate_call NEWLINE
+         | comparison NEWLINE
+         | "not" predicate_call NEWLINE
+
+predicate_call: IDENTIFIER "(" arg_list? ")"
+              | path
+
+arg_list: arg ("," arg)*
+
+arg: atom | VARIABLE | value
+
+comparison: path compare_op value
+compare_op: ">=" | "<=" | ">" | "<" | "=" | "!="
+
+// ─── Transforms ───────────────────────────────────────────────────────────────
+
+transform_decl: "transform" IDENTIFIER "[" param_list? "]" "→" type_expr ":" NEWLINE INDENT transform_body DEDENT
+
+param_list: param ("," param)*
+param: IDENTIFIER ":" type_expr
+
+transform_body: transform_directive+
+
+transform_directive: "intent" ":" STRING NEWLINE
+                   | "considering" ":" path_list NEWLINE
+                   | "maximize" ":" IDENTIFIER NEWLINE
+                   | "minimize" ":" IDENTIFIER NEWLINE
+                   | "require" ":" condition_expr NEWLINE
+
+path_list: path ("," path)*
+
+condition_expr: path compare_op value
+              | "confidence" compare_op NUMBER
+
+// ─── Contexts ─────────────────────────────────────────────────────────────────
+
+context_decl: "context" IDENTIFIER ":" NEWLINE INDENT context_body DEDENT
+
+context_body: context_directive+
+
+context_directive: "confidence-threshold" ":" NUMBER NEWLINE
+                 | "error-tolerance" ":" error_level NEWLINE
+                 | "extends" ":" IDENTIFIER NEWLINE
+
+error_level: "zero" | "low" | "medium" | "high"
+
+// ─── Queries ──────────────────────────────────────────────────────────────────
+
+query_stmt: "query" ":" predicate_call "?" NEWLINE
+          | "find" var_list "where" condition_list NEWLINE
+          | "find" var_list "where" condition_list "confidence" compare_op NUMBER NEWLINE
+
+var_list: VARIABLE ("," VARIABLE)*
+
+condition_list: condition_expr_q ("," condition_expr_q)*
+
+condition_expr_q: predicate_call
+                | comparison
+
+// ─── Import ───────────────────────────────────────────────────────────────────
+
+import_stmt: "import" IDENTIFIER "from" STRING NEWLINE
+           | "import" "*" "from" STRING NEWLINE
+
+// ─── Terminals ────────────────────────────────────────────────────────────────
+
+VARIABLE: /[A-Z][A-Za-z0-9_-]*/
+
+IDENTIFIER: /[a-z][a-zA-Z0-9_-]*/
+
+NUMBER: /-?[0-9]+(\.[0-9]+)?([eE][+-]?[0-9]+)?/
+
+STRING: "\"" /[^"\\]*/ "\""
+
+COMMENT: /\/\/[^\n]*/
+
+NEWLINE: /\r?\n[\t ]*/
+INDENT: "<INDENT>"
+DEDENT: "<DEDENT>"
+
+%ignore /[ \t]+/
+%ignore COMMENT
