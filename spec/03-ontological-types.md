@@ -14,86 +14,79 @@ The type system is **open**: you can always declare new types without modifying 
 ## 2. Type Declaration Syntax
 
 ```
-TypeDecl     ::= 'type' TypeName ('IS-A' TypeName (',' TypeName)*)? NEWLINE
-                 BLOCK-START TypeBody BLOCK-END
-
-TypeBody     ::= FieldsBlock?
-
-FieldsBlock  ::= 'fields' ':' NEWLINE
-                 BLOCK-START FieldDecl+ BLOCK-END
+TypeDecl     ::= TypeName ':' NEWLINE BLOCK-START FieldDecl+ BLOCK-END
+               | TypeName '(' TypeName (',' TypeName)* ')' ':' NEWLINE BLOCK-START FieldDecl+ BLOCK-END
+               | TypeName '(' TypeName (',' TypeName)* ')' ':'   // no fields
 
 FieldDecl    ::= FieldName ':' TypeExpr NEWLINE
 
 TypeName     ::= PascalCase identifier
-FieldName    ::= kebab-case identifier
-TypeExpr     ::= TypeName | TypeName '?' | TypeName '+' | '[' TypeExpr ']' | TypeExpr '|' TypeExpr
+FieldName    ::= kebab-case or snake_case identifier
+TypeExpr     ::= TypeName | 'List' '<' TypeExpr '>' | 'Set' '<' TypeExpr '>' | 'Optional' '<' TypeExpr '>'
 ```
+
+A type with no parents implicitly has `Entity` as its root. Parent types are listed in parentheses immediately after the type name, before the colon.
 
 ### 2.1 Minimal Type Declaration
 
 A type with no parent and no fields:
 
 ```logos
-type Tag
+Tag:
 ```
+
+> Note: A type with no fields still requires the colon. A body block (indented fields) is optional.
 
 ### 2.2 Type with Parent
 
 ```logos
-type Person IS-A Entity
+Person (Entity):
+  name: HumanName
+  age: Duration
 ```
 
 ### 2.3 Type with Multiple Parents (Multiple Inheritance)
 
 ```logos
-type Employee IS-A Person, OrganizationMember
+Employee (Person, OrganizationMember):
+  title: Text
 ```
 
 ### 2.4 Type with Fields
 
 ```logos
-type Person IS-A Entity
-  fields:
-    name: HumanName
-    age: Duration
-    nationality: Text
+Person (Entity):
+  name: HumanName
+  age: Duration
+  nationality: Text
 ```
 
 ### 2.5 Full Example with Nested Hierarchy
 
 ```logos
-type LegalEntity IS-A Entity
-  fields:
-    legal-name: Text
-    jurisdiction: Text
+LegalEntity:
+  legal-name: Text
+  jurisdiction: Text
 
-type Organization IS-A LegalEntity
-  fields:
-    founded: Duration
-    headquarters: Address
+Organization (LegalEntity):
+  founded: Duration
+  headquarters: Text
 
-type Corporation IS-A Organization
-  fields:
-    ticker-symbol: Text?
-    public: Boolean
+Corporation (Organization):
+  ticker-symbol: Text
+  public: Boolean
 
-type Person IS-A LegalEntity
-  fields:
-    name: HumanName
-    date-of-birth: Date?
-    nationality: Text
+Person (LegalEntity):
+  name: HumanName
+  nationality: Text
 
-type Employee IS-A Person
-  fields:
-    employer: Organization
-    title: Text
-    start-date: Date
-    salary: Money?
+Employee (Person):
+  employer: Organization
+  title: Text
+  salary: Optional<Money>
 
-type Executive IS-A Employee
-  fields:
-    reports-to: Executive?
-    budget-authority: Money?
+Executive (Employee):
+  budget-authority: Optional<Money>
 ```
 
 ## 3. Built-in Root Types
@@ -104,11 +97,7 @@ Logos provides a set of built-in types that are the roots of the type lattice. A
 
 `Entity` is the universal root type. Every named thing in the Logos knowledge graph is an `Entity`. Entities have a unique identifier within their namespace. `Entity` itself has no built-in fields; all fields come from subtypes.
 
-```logos
-// All of these are entities
-alice :: Person   // alice is of type Person (which IS-A Entity)
-acme-corp :: Corporation
-```
+> **Planned (not yet implemented):** Explicit type ascription using the `::` operator (`alice :: Person`) is not yet supported by the runtime. Currently, entities acquire their type implicitly by being the subject of field bindings declared for a given type.
 
 ### 3.2 Number
 
@@ -123,15 +112,6 @@ acme-corp :: Corporation
 | `Money` | Currency-denominated amount |
 | `Percentage` | A `Ratio` constrained to [0, 1], displayed as % |
 
-```logos
-type Money IS-A Number
-  fields:
-    amount: Ratio
-    currency: CurrencyCode
-
-type Percentage IS-A Ratio
-```
-
 Numbers support the standard arithmetic operators and all comparison operators.
 
 ### 3.3 Text
@@ -141,7 +121,7 @@ Numbers support the standard arithmetic operators and all comparison operators.
 | Type | Description |
 |------|-------------|
 | `Text` | Arbitrary Unicode string |
-| `HumanName` | Structured personal name (see Section 3.4) |
+| `HumanName` | Structured personal name |
 | `Identifier` | A machine-readable identifier (no spaces) |
 | `URL` | A well-formed URL |
 | `CurrencyCode` | ISO 4217 currency code (e.g., `"USD"`, `"EUR"`) |
@@ -150,33 +130,22 @@ Numbers support the standard arithmetic operators and all comparison operators.
 
 `HumanName` is a structured type representing a personal name. It deserves special treatment because names are culturally complex: different cultures order components differently, some people have only one name, names may include honorifics, etc.
 
-```logos
-type HumanName IS-A Text
-  fields:
-    honorific: Text?          // "Dr.", "Prof.", "Mr.", "Ms."
-    given-names: [Text]+      // list of given/first names
-    family-name: Text?        // may be absent (some cultures)
-    generation-suffix: Text?  // "Jr.", "III", "Sr."
-    preferred: Text?          // preferred form of address
-```
-
-**HumanName literal syntax:**
+In the current runtime, `HumanName` values are stored as `Text` strings. The structured field breakdown below describes the intended semantics:
 
 ```logos
-// Short form (auto-parsed as given + family)
-name of alice := { first: "Alice", last: "Smith" }
-
-// Full form
-name of alice := {
-  honorific: "Dr."
-  given-names: ["Alice", "Marie"]
-  family-name: "Smith-Jones"
-  generation-suffix: "Jr."
-  preferred: "Ali"
-}
+HumanName (Text):
+  honorific: Optional<Text>       // "Dr.", "Prof.", "Mr.", "Ms."
+  given-names: List<Text>         // list of given/first names
+  family-name: Optional<Text>     // may be absent (some cultures)
+  generation-suffix: Optional<Text>  // "Jr.", "III", "Sr."
+  preferred: Optional<Text>       // preferred form of address
 ```
 
-**Rendering:** The `HumanName` type has a built-in `render` predicate that produces a display string using locale-appropriate name ordering conventions.
+**HumanName literal syntax (current runtime):**
+
+```logos
+name of alice := "Alice Smith"
+```
 
 ### 3.5 Duration
 
@@ -199,24 +168,10 @@ Duration values support `+` and `-` operators. The rules for calendar arithmetic
 ```logos
 // Duration arithmetic examples
 age-threshold := 18 years
-voting-cutoff := 18 years + 0 months  // same thing
 
-// Adding durations
-total-term := 4 years + 6 months
-extended-term := total-term + 1 year  // 5 years + 6 months
-```
-
-**Duration comparison:**
-
-Durations are converted to a canonical form for comparison. For comparisons involving calendar durations (years/months), the comparison is made in terms of days, using average day counts (365.25 days/year, 30.4375 days/month):
-
-```logos
+// Duration comparison
 age of alice >= 18 years   // compares in days: age-in-days >= 6574
 ```
-
-**Age computation:**
-
-The built-in `age-as-of(entity, date)` function computes a Duration by subtracting the entity's `date-of-birth` from the given date, using calendar-aware subtraction.
 
 ### 3.6 Boolean
 
@@ -238,52 +193,48 @@ Date literals use the `@` prefix:
 born-on of alice := @1995-06-15
 ```
 
-Date arithmetic with Duration produces a new Date:
-
-```logos
-// Date + Duration → Date
-next-birthday := @1995-06-15 + 30 years  // @2025-06-15
-```
-
 ### 3.8 Set and List
 
 | Type | Description |
 |------|-------------|
-| `List` | Ordered, indexed sequence of values |
-| `Set` | Unordered collection of unique values |
+| `List<T>` | Ordered, indexed sequence of values |
+| `Set<T>` | Unordered collection of unique values |
 
 Type expressions for collections:
 
 ```logos
-type Person IS-A Entity
-  fields:
-    aliases: [Text]        // List of Text
-    permissions: #{Text}   // Set of Text
+Person (Entity):
+  aliases: List<Text>
+  permissions: Set<Text>
 ```
 
 ## 4. Type Expressions
 
-A type expression appears in field declarations and type ascriptions. Type expression forms:
+A type expression appears in field declarations. Type expression forms supported by the current runtime:
 
 | Expression | Meaning |
 |------------|---------|
 | `T` | Exactly type T |
-| `T?` | Optional: T or absent |
+| `Optional<T>` | Optional: T or absent |
+| `List<T>` | Possibly-empty list of T |
+| `Set<T>` | Set of T |
+
+The following type expression forms are **planned but not yet implemented** in the runtime:
+
+| Expression | Meaning |
+|------------|---------|
+| `T?` | Shorthand for `Optional<T>` |
 | `T+` | Non-empty list of T |
-| `[T]` | Possibly-empty list of T |
-| `#{T}` | Set of T |
+| `#{T}` | Alternative set syntax |
 | `T \| U` | Union: T or U |
 | `T & U` | Intersection: both T and U |
 
 ```logos
-type Document IS-A Entity
-  fields:
-    title: Text
-    author: Person | Organization   // union type
-    tags: [Text]                    // list
-    created: Date
-    reviewed-by: Person?            // optional
-    sections: Section+              // non-empty list
+Document (Entity):
+  title: Text
+  author: Text
+  tags: List<Text>
+  created: Date
 ```
 
 ## 5. The IS-A Lattice
@@ -293,15 +244,17 @@ type Document IS-A Entity
 Logos supports **multiple inheritance** in the IS-A lattice. An entity can belong to multiple types, and a type can have multiple parent types.
 
 ```logos
-type Person IS-A Entity
-type Employee IS-A Person
-type Citizen IS-A Person
-  fields:
-    country: Text
+Person (Entity):
+  name: HumanName
 
-// A person can be both Employee and Citizen
-alice :: Employee
-alice :: Citizen
+Employee (Person):
+  employer: Text
+
+Citizen (Person):
+  country: Text
+
+// A type can inherit from both Employee and Citizen
+EmployedCitizen (Employee, Citizen):
 ```
 
 When a type has multiple parents, it inherits all fields from all parents. If two parents declare a field with the same name, it is an error unless both declarations are identical (same type expression).
@@ -311,21 +264,18 @@ When a type has multiple parents, it inherits all fields from all parents. If tw
 When the same ancestor type appears via multiple inheritance paths (the "diamond problem"), Logos uses **C3 linearization** to determine field resolution order. In practice, because field types must be consistent, diamond inheritance rarely causes conflicts.
 
 ```logos
-type Named IS-A Entity
-  fields:
-    name: Text
+Named (Entity):
+  name: Text
 
-type Person IS-A Named
-  fields:
-    age: Duration
+Person (Named):
+  age: Duration
 
-type Employee IS-A Named
-  fields:
-    employer: Organization
+Employee (Named):
+  employer: Text
 
 // Worker inherits `name` from Named (once, via both Person and Employee)
 // and gets both `age` and `employer`
-type Worker IS-A Person, Employee
+Worker (Person, Employee):
 ```
 
 ### 5.3 IS-A Lattice Diagram Example
@@ -361,86 +311,68 @@ Entity
 A subtype inherits all fields from its parent types. Inherited fields can be **narrowed** (replaced with a more specific type expression) but not widened.
 
 ```logos
-type Animal IS-A Entity
-  fields:
-    name: Text
-    lifespan: Duration
+Animal (Entity):
+  name: Text
+  lifespan: Duration
 
-type Dog IS-A Animal
-  fields:
-    name: Text   // valid: same type (no change)
-    breed: Text
+Dog (Animal):
+  breed: Text
 
-type GoldenRetriever IS-A Dog
-  fields:
-    // Inherits name: Text, lifespan: Duration, breed: Text from ancestors
-    // Can add new fields:
-    coat-color: Text
+GoldenRetriever (Dog):
+  // Inherits name: Text, lifespan: Duration, breed: Text from ancestors
+  // Can add new fields:
+  coat-color: Text
 ```
 
 **Narrowing example** (a subtype may narrow a field to a more specific type):
 
 ```logos
-type Vehicle IS-A Entity
-  fields:
-    owner: Entity    // broad: any entity can own a vehicle
+Vehicle (Entity):
+  owner: Text    // broad: any text identifier
 
-type RegisteredVehicle IS-A Vehicle
-  fields:
-    owner: Person    // narrowed: only Persons own registered vehicles
+RegisteredVehicle (Vehicle):
+  owner: Text    // narrowed semantics expressed via inference rules
 ```
-
-Narrowing is valid because `Person IS-A Entity`, so any rule that accepts a `Vehicle.owner` will accept a `RegisteredVehicle.owner` (Liskov substitution principle).
 
 ## 7. Type Ascription
 
-An entity is associated with a type using the `::` operator:
+> **Planned (not yet implemented):** The `::` type ascription operator (`alice :: Person`) is not implemented in the current runtime. The syntax is reserved for a future version.
+
+In the current runtime, entities are associated with types implicitly: when you assert a value for a field declared in a type, the entity is considered to be of that type for purposes of field lookup. Explicit type assertions and type-checking at bind time are planned features.
+
+The intended future syntax is:
 
 ```logos
+// Planned syntax — not yet implemented:
 alice :: Person
 acme-corp :: Corporation
-```
-
-Type ascription is itself a fact in the knowledge graph, with provenance and confidence:
-
-```logos
 alice :: Employee [confidence: 0.9, source: "HR database"]
 ```
-
-An entity can have multiple type ascriptions (it belongs to multiple types simultaneously):
-
-```logos
-alice :: Person
-alice :: Employee
-alice :: Citizen
-```
-
-The type of an entity is the **join** (most specific common supertype) of all its ascribed types.
 
 ## 8. Type Checking Rules
 
 ### 8.1 Field Type Checking
 
-When a binding asserts a value for a field declared in a type, the value must conform to the field's type expression. The type checker resolves this at assertion time.
+> **Planned (not yet implemented):** The current runtime does not validate binding values against declared field types. A binding such as `age of alice := "thirty"` is accepted without error even if `age` is declared as `Duration`. Type enforcement at assertion time is a planned feature.
+
+The intended behavior once implemented:
 
 ```logos
-type Person IS-A Entity
-  fields:
-    age: Duration
+Person (Entity):
+  age: Duration
 
 age of alice := 30 years    // OK: 30 years is a Duration
-age of alice := "thirty"    // ERROR: "thirty" is Text, not Duration
-age of alice := 30          // ERROR: 30 is Integer, not Duration
+age of alice := "thirty"    // ERROR (planned): "thirty" is Text, not Duration
+age of alice := 30          // ERROR (planned): 30 is Integer, not Duration
 ```
 
 ### 8.2 Optional Fields
 
-A field declared `T?` may be absent from an entity. Querying an absent optional field returns no binding (not an error).
+A field declared `Optional<T>` may be absent from an entity. Querying an absent optional field returns no binding (not an error).
 
 ```logos
-type Person IS-A Entity
-  fields:
-    nickname: Text?
+Person (Entity):
+  nickname: Optional<Text>
 
 // alice has no nickname binding — this is valid, not an error
 find nickname of alice  // returns: no binding found
@@ -448,39 +380,31 @@ find nickname of alice  // returns: no binding found
 
 ### 8.3 Inference-Level Type Checking
 
-Inference rules may constrain their variables to specific types:
+Inference rules may constrain their variables to specific types via the `::` condition syntax. This is implemented in the runtime:
 
 ```logos
 can-retire(P) if:
-  P :: Employee
-  age of P >= 65 years
+  P.age >= 65 years
 ```
 
-This rule only applies to entities ascribed as `Employee`. Attempting to query `can-retire(acme-corp)` will fail the `P :: Employee` check before evaluating the age condition.
+> **Note:** The `P :: Employee` type-guard form in rule conditions depends on the type ascription feature and is **planned (not yet implemented)**. Currently, rules match on field bindings rather than explicit type labels.
 
 ### 8.4 Runtime Type Coercion
 
-Logos does **not** perform implicit type coercions. All type conversions are explicit using built-in conversion functions:
-
-```logos
-// Explicit conversion
-age-as-years of alice := years-of(age of alice)   // Duration → Integer
-```
+Logos does **not** perform implicit type coercions. All type conversions are explicit using built-in conversion functions.
 
 ## 9. Structural vs. Nominal Typing
 
 Logos uses **nominal typing**: a type is identified by its name, not by its structure. Two types with identical field declarations are distinct types and are not interchangeable without explicit IS-A relationships.
 
 ```logos
-type Point2D IS-A Entity
-  fields:
-    x: Float
-    y: Float
+Point2D (Entity):
+  x: Float
+  y: Float
 
-type Coordinate IS-A Entity
-  fields:
-    x: Float
-    y: Float
+Coordinate (Entity):
+  x: Float
+  y: Float
 
 // Point2D and Coordinate are NOT the same type,
 // even though they have the same fields.

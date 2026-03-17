@@ -21,7 +21,7 @@ from logos.ast_nodes import (
     ImportStmt, Path, DurationLit, Annotations, Variable, PredicateCall,
     Comparison,
 )
-from logos.confidence import ConfidenceValue, from_annotation
+from logos.confidence import ConfidenceValue, from_annotation, disjoin_all
 from logos.context import Context, ContextRegistry
 from logos.inference import InferenceEngine, Proof
 from logos.semantic_graph import SemanticGraph, FactNode, QueryResult
@@ -60,9 +60,21 @@ class Executor:
 
     @property
     def engine(self) -> InferenceEngine:
-        """Lazy-construct inference engine (invalidated when rules change)."""
+        """Lazy-construct inference engine (invalidated when rules/context change)."""
         if self._engine is None:
-            self._engine = InferenceEngine(self.graph, self.rules)
+            active = self.context_registry.active_context_names()
+            # Use the most recently activated non-default context, if any
+            ctx_name = next(
+                (n for n in reversed(active)
+                 if n != ContextRegistry.DEFAULT_NAME),
+                None
+            )
+            threshold = self.context_registry.effective_threshold(ctx_name)
+            self._engine = InferenceEngine(
+                self.graph, self.rules,
+                confidence_threshold=threshold,
+                active_context=ctx_name,
+            )
         return self._engine
 
     def _invalidate_engine(self):
@@ -217,44 +229,61 @@ class Executor:
     def _exec_context(self, decl: ContextDecl):
         ctx = Context.from_decl(decl)
         self.context_registry.register(ctx)
+        self._invalidate_engine()  # threshold may have changed
+
+    def activate_context(self, name: str):
+        """Activate a named context, applying its confidence threshold."""
+        self.context_registry.activate(name)
+        self._invalidate_engine()
 
     # ── Queries ───────────────────────────────────────────────────────────────
 
     def _exec_bool_query(self, query: BoolQuery) -> QueryOutput:
-        query_text = f"can-{query.predicate.name}({', '.join(str(a) for a in query.predicate.args)})"
         query_text = f"{query.predicate.name}({', '.join(str(a) for a in query.predicate.args)})"
 
-        proof = self.engine.prove_first(query.predicate)
-        if proof.success:
+        # Collect all proofs and OR-combine their confidences.
+        # P(A derived by any of N independent rules) = 1 - ∏(1 - pᵢ)
+        all_confidences = [
+            p.confidence for p in self.engine.prove(query.predicate)
+            if p.success
+        ]
+        if not all_confidences:
             return QueryOutput(
                 query_text=query_text,
-                results=[{}],   # bool query — no bindings exposed to user
-                confidence=proof.confidence,
+                results=[],
+                confidence=ConfidenceValue.impossible(),
             )
         return QueryOutput(
             query_text=query_text,
-            results=[],
-            confidence=ConfidenceValue.impossible(),
+            results=[{}],   # bool query — no bindings exposed to user
+            confidence=disjoin_all(all_confidences),
         )
 
     def _exec_find_query(self, query: FindQuery) -> QueryOutput:
         var_names = [v.name for v in query.variables]
         query_text = f"find {', '.join(var_names)} where ..."
 
-        from logos.inference import conjoin_all
-        from logos.confidence import conjoin_all as ca
+        from logos.inference import _compare
+
+        # Group proofs by their binding tuple; OR-combine confidences per group.
+        # This correctly handles multiple derivation paths for the same result.
+        groups: dict[tuple, list[ConfidenceValue]] = {}
+        for proof in self.engine.prove_all(query.conditions):
+            if not proof.success:
+                continue
+            if query.confidence_filter:
+                op, threshold = query.confidence_filter
+                if not _compare(proof.confidence.point, op, threshold):
+                    continue
+            key = tuple(proof.bindings.get(v) for v in var_names)
+            groups.setdefault(key, []).append(proof.confidence)
 
         results = []
-        for proof in self.engine.prove_all(query.conditions):
-            if proof.success:
-                # Apply confidence filter if present
-                if query.confidence_filter:
-                    op, threshold = query.confidence_filter
-                    from logos.inference import _compare
-                    if not _compare(proof.confidence.point, op, threshold):
-                        continue
-                row = {v: proof.bindings.get(v) for v in var_names}
-                results.append({**row, "__confidence__": proof.confidence})
+        for key, confidences in groups.items():
+            combined = disjoin_all(confidences)
+            row = dict(zip(var_names, key))
+            row["__confidence__"] = combined
+            results.append(row)
 
         best_conf = (max((r["__confidence__"] for r in results),
                          key=lambda c: c.point)

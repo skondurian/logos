@@ -50,7 +50,7 @@ CompOp  ::= '==' | '!=' | '<' | '<=' | '>' | '>='
 
 ```logos
 adult(P) if:
-  age of P >= 18 years
+  P.age >= 18 years
 ```
 
 This rule defines a predicate `adult` that is true for any entity P whose age is at least 18 years. The rule has a single condition. `P` is a free variable that will be unified with entities from the knowledge base during proof search.
@@ -61,9 +61,8 @@ Multiple conditions in a rule body are implicitly joined with AND. All condition
 
 ```logos
 can-vote(P) if:
-  P :: Person
-  age of P >= 18 years
-  nationality of P == "American"
+  P.age >= 18 years
+  P.nationality = "American"
 ```
 
 All three conditions must be satisfied simultaneously. The confidence of the conclusion is the product of the premise confidences times the degradation factor.
@@ -84,8 +83,7 @@ This derives the `full-name` field of P from its `first-name` and `last-name` fi
 
 ```logos
 can-retire(P) [degradation: 0.95, priority: 10] if:
-  P :: Employee
-  age of P >= 65 years
+  P.age >= 65 years
 ```
 
 | Annotation | Type | Default | Meaning |
@@ -223,15 +221,12 @@ A predicate can be defined by multiple rules. Each rule provides an independent 
 ```logos
 // A person can fly if they are a licensed pilot
 can-fly(P) if:
-  P :: Person
   has-license(P, "pilot")
 
 // A person can fly if they have a valid flight booking
 can-fly(P) if:
-  P :: Person
   has-booking(P, Flight)
-  Flight :: CommercialFlight
-  departure-time of Flight > now
+  Flight.departure-time > now
 ```
 
 Both rules contribute to `can-fly`. If alice has a pilot license with confidence 0.9, and also has a flight booking with confidence 0.8, then `can-fly(alice)` has confidence:
@@ -267,9 +262,8 @@ NAF does not propagate confidence in the same way as positive conditions. The re
 
 ```logos
 unregistered-voter(P) [degradation: 0.80] if:
-  P :: Person
-  age of P >= 18 years
-  nationality of P == "American"
+  P.age >= 18 years
+  P.nationality = "American"
   not: registered-voter(P)
   // The not: condition carries the degradation cost
 ```
@@ -281,12 +275,12 @@ A rule condition using `not:` is **safe** if all variables appearing in the nega
 ```logos
 // SAFE: P appears in positive conditions before not:
 is-not-citizen(P, "France") if:
-  P :: Person               // P bound here
+  P.nationality = _         // P bound here
   not: citizen-of(P, "France")  // P is safe
 
 // UNSAFE: Q appears only in the negated condition
 bad-rule(P) if:
-  P :: Person
+  P.age = _
   not: knows(P, Q)    // ERROR: Q is not bound by any positive condition
 ```
 
@@ -450,7 +444,6 @@ find age of alice
 
 // Find all employees and their employers
 find P, E where
-  P :: Employee
   employer of P == E
 ```
 
@@ -458,10 +451,9 @@ find P, E where
 
 ```logos
 find P where
-  P :: Person
-  age of P >= 18 years
-  age of P < 65 years
-  nationality of P == "American"
+  P.age >= 18 years
+  P.age < 65 years
+  P.nationality = "American"
 ```
 
 ### 11.4 Find with Options
@@ -574,21 +566,18 @@ The following example brings together rules, confidence propagation, negation, a
 
 ```logos
 // Types
-type Person IS-A Entity
-  fields:
-    name: HumanName
-    date-of-birth: Date?
-    nationality: Text?
+Person (Entity):
+  name: HumanName
+  date-of-birth: Optional<Date>
+  nationality: Optional<Text>
 
-type RegisteredVoter IS-A Person
-  fields:
-    registration-date: Date
-    registration-state: Text
+RegisteredVoter (Person):
+  registration-date: Date
+  registration-state: Text
 
-type Felon IS-A Person
-  fields:
-    conviction-date: Date
-    sentence-completed: Boolean
+Felon (Person):
+  conviction-date: Date
+  sentence-completed: Boolean
 
 // Base facts
 name of alice       := { first: "Alice", last: "Smith" }
@@ -621,10 +610,10 @@ is-citizen(P, Country) if:
 voting-eligible(P) if:
   is-adult(P)
   is-citizen(P, "American")
-  not: P :: Felon
+  not: felon(P)
 
 registered-and-eligible(P) if:
-  P :: RegisteredVoter
+  P.registration-date = _
   voting-eligible(P)
 
 // Queries

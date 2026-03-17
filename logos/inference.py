@@ -12,6 +12,7 @@ Algorithm: backward chaining (top-down SLD resolution)
 """
 
 from __future__ import annotations
+import itertools
 from dataclasses import dataclass, field
 from typing import Any, Iterator, Optional
 
@@ -25,6 +26,11 @@ from logos import errors as err
 
 
 MAX_DEPTH = 64
+
+# Global counter — each rule invocation gets a unique suffix, preventing
+# variable capture even when the same rule fires at the same depth in
+# different branches of the proof tree.
+_RULE_COUNTER = itertools.count()
 
 
 # ─── Substitution / bindings ──────────────────────────────────────────────────
@@ -114,11 +120,15 @@ class InferenceEngine:
         rules: list[InferenceRule],
         max_depth: int = MAX_DEPTH,
         degradation: float = DEFAULT_DEGRADATION,
+        confidence_threshold: float = 0.0,
+        active_context: Optional[str] = None,
     ):
         self.graph = graph
         self.rules = rules
         self.max_depth = max_depth
         self.degradation = degradation
+        self.confidence_threshold = confidence_threshold
+        self.active_context = active_context
 
     # ── Public interface ──────────────────────────────────────────────────────
 
@@ -189,6 +199,18 @@ class InferenceEngine:
         # 2. Try matching against inference rules
         yield from self._prove_from_rules(goal, bindings, depth)
 
+    def _fact_visible(self, fact: FactNode) -> bool:
+        """
+        A fact is visible if:
+          - Its confidence meets the active context threshold.
+          - Its context_name is None (global) OR matches the active context.
+        """
+        if fact.confidence.point < self.confidence_threshold:
+            return False
+        if fact.context_name is not None and fact.context_name != self.active_context:
+            return False
+        return True
+
     def _prove_from_facts(self, goal: PredicateCall,
                           bindings: Bindings) -> Iterator[Proof]:
         """
@@ -206,6 +228,8 @@ class InferenceEngine:
             if isinstance(subject_term, Variable):
                 # find P where predicate(P) — iterate all subjects
                 for fact in self.graph.query_all_subjects(goal.name):
+                    if not self._fact_visible(fact):
+                        continue
                     new_b = unify_term(subject_term, fact.subject, bindings)
                     if new_b is not None:
                         yield Proof(
@@ -216,14 +240,18 @@ class InferenceEngine:
                         )
             else:
                 subject = _term_to_str(subject_term)
-                result = self.graph.query(subject, goal.name)
+                result = self.graph.query(subject, goal.name,
+                                          confidence_threshold=self.confidence_threshold)
                 if result.found:
-                    yield Proof(
-                        success=True,
-                        bindings=bindings,
-                        confidence=result.confidence,
-                        explanation=[f"fact:{subject}.{goal.name}"],
-                    )
+                    # Also check context visibility
+                    visible = all(self._fact_visible(f) for f in result.facts)
+                    if visible:
+                        yield Proof(
+                            success=True,
+                            bindings=bindings,
+                            confidence=result.confidence,
+                            explanation=[f"fact:{subject}.{goal.name}"],
+                        )
 
         elif len(args) == 2:
             subject_term, value_term = args
@@ -297,13 +325,20 @@ class InferenceEngine:
                 # If subject_raw is already bound to a concrete subject, just look it up
                 concrete_subject = bindings.get(subject_raw)
                 if isinstance(concrete_subject, str):
-                    result = self.graph.query(concrete_subject, str(predicate))
-                    if result.found and _compare(result.value, goal.op, right_val):
-                        conf = result.confidence.conjoin(right_conf)
-                        yield Proof(success=True, bindings=bindings, confidence=conf)
+                    result = self.graph.query(concrete_subject, str(predicate),
+                                              confidence_threshold=self.confidence_threshold)
+                    if result.found:
+                        visible = [f for f in result.facts if self._fact_visible(f)]
+                        if visible:
+                            best = max(visible, key=lambda f: f.confidence.point)
+                            if _compare(best.value, goal.op, right_val):
+                                conf = best.confidence.conjoin(right_conf)
+                                yield Proof(success=True, bindings=bindings, confidence=conf)
                     return
                 # subject_raw is unbound — enumerate all facts for this predicate
                 for fact in self.graph.query_all_subjects(str(predicate)):
+                    if not self._fact_visible(fact):
+                        continue
                     if _compare(fact.value, goal.op, right_val):
                         new_b = {**bindings, subject_raw: fact.subject}
                         conf = fact.confidence.conjoin(right_conf)
@@ -348,15 +383,19 @@ class InferenceEngine:
         if isinstance(term, Path):
             if len(term.parts) == 2:
                 subject, predicate = term.parts[0], term.parts[1]
-                result = self.graph.query(str(subject), str(predicate))
+                result = self.graph.query(str(subject), str(predicate),
+                                          confidence_threshold=self.confidence_threshold)
                 if result.found:
-                    return result.value, result.confidence
+                    # Apply context + threshold visibility to all matching facts
+                    visible = [f for f in result.facts if self._fact_visible(f)]
+                    if visible:
+                        best = max(visible, key=lambda f: f.confidence.point)
+                        return best.value, best.confidence
+                return None, ConfidenceValue.impossible()
             elif len(term.parts) == 1:
-                # Single-part path — might be a value already looked up
                 return term.parts[0], ConfidenceValue.absolute()
             return None, ConfidenceValue.impossible()
         if isinstance(term, Variable):
-            # Try to resolve from bindings
             val = bindings.get(term.name)
             if val is not None:
                 return val, ConfidenceValue.absolute()
@@ -393,8 +432,12 @@ def _compare(left: Any, op: str, right: Any) -> bool:
 
 
 def _rename_vars(rule: InferenceRule, depth: int) -> InferenceRule:
-    """Return a copy of rule with all variables renamed to avoid capture."""
-    suffix = f"_d{depth}"
+    """Return a copy of rule with all variables renamed to avoid capture.
+
+    Uses a global counter (not just depth) so two firings of the same rule
+    at the same depth in different proof branches cannot share variable names.
+    """
+    suffix = f"_r{next(_RULE_COUNTER)}"
 
     def rename(term):
         if isinstance(term, Variable):

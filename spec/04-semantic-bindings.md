@@ -79,7 +79,7 @@ The following table makes the contrast explicit:
 | Confidence | Not applicable | Mandatory (defaults to absolute) |
 | Conflict | Last write wins | Both facts coexist |
 | Queryable | Only current value | All values, with filter by provenance |
-| Typed | Optional | Checked against ontological type |
+| Typed | Optional | Declared against ontological type (enforcement planned) |
 | Observable | By running code | By querying the graph |
 
 ### 3.1 The Immutability Principle
@@ -107,16 +107,15 @@ The inference engine resolves conflicts using confidence and recency when needed
 Every binding carries a **provenance record** — a structured object describing the origin of the binding. The full structure is:
 
 ```logos
-type ProvenanceRecord IS-A Entity
-  fields:
-    source: Text?           // description or name of the source
-    asserted-at: DateTime?  // when the binding was asserted
-    asserted-by: Entity?    // who/what asserted the binding
-    derived-from: [Binding] // for inferred bindings: the premises used
-    rule-applied: Rule?     // for inferred bindings: the rule that fired
-    retracted: Boolean      // true if this binding has been retracted
-    retracted-at: DateTime? // when it was retracted
-    retracted-by: Entity?   // who retracted it
+ProvenanceRecord (Entity):
+  source: Optional<Text>         // description or name of the source
+  asserted-at: Optional<Text>    // when the binding was asserted
+  asserted-by: Optional<Text>    // who/what asserted the binding
+  derived-from: List<Text>       // for inferred bindings: the premises used
+  rule-applied: Optional<Text>   // for inferred bindings: the rule that fired
+  retracted: Boolean             // true if this binding has been retracted
+  retracted-at: Optional<Text>   // when it was retracted
+  retracted-by: Optional<Text>   // who retracted it
 ```
 
 ### 4.1 Default Provenance
@@ -258,14 +257,13 @@ The rule is evaluated once for each binding, producing multiple conclusions with
 When a contradiction is detected, the runtime creates a **contradiction record** in the knowledge graph:
 
 ```logos
-type ContradictionRecord IS-A Entity
-  fields:
-    subject: Entity
-    predicate: Text
-    binding-a: Binding
-    binding-b: Binding
-    detected-at: DateTime
-    resolution: Text?
+ContradictionRecord (Entity):
+  subject: Text
+  predicate: Text
+  binding-a: Text
+  binding-b: Text
+  detected-at: Text
+  resolution: Optional<Text>
 ```
 
 This record is itself queryable: `find all ContradictionRecord` returns all known contradictions.
@@ -408,23 +406,16 @@ find age of alice [min-confidence: 0.9]
 
 Returns only bindings with confidence ≥ 0.9.
 
-## 11. Syntactic Sugar: Inline Type Ascription
+## 11. Entity Field Assertions
 
-A common pattern is to declare an entity's type alongside its first binding:
+In the current runtime, entities are identified by name and their fields are asserted individually:
 
 ```logos
-// Verbose form
-alice :: Person
-name of alice := { first: "Alice", last: "Smith" }
+name of alice := "Alice Smith"
 age of alice := 30 years
-
-// Inline type ascription (syntactic sugar)
-alice [:: Person]:
-  name := { first: "Alice", last: "Smith" }
-  age := 30 years
 ```
 
-In the inline form, `name` and `age` are understood to refer to the fields of the declared type. This is sugar for the explicit `field of entity` form.
+> **Planned (not yet implemented):** Inline type ascription syntax (`alice [:: Person]:`) and the explicit `::` ascription operator (`alice :: Person`) are not yet supported. When implemented, they will allow grouping field assertions under a declared type, providing both documentation and (eventually) type enforcement.
 
 ## 12. Binding Uniqueness and Identity
 

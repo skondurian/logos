@@ -2,52 +2,59 @@
 
 ## Overview
 
-A **context** is a named configuration envelope that governs how the semantic graph is queried and how inference results are evaluated. Contexts control the confidence threshold below which facts are treated as absent, the tolerance for contradictions, and the subset of facts that are visible to queries. They are the mechanism by which a single Logos program can behave differently in production versus staging versus testing, or across jurisdictions that impose different rules.
+A **context** is a named configuration envelope that governs how the semantic graph is queried and how inference results are evaluated. Contexts control the confidence threshold below which facts are treated as absent and the subset of facts that are tagged for a given deployment environment. They are the mechanism by which a single Logos program can behave differently in production versus staging versus testing, or across jurisdictions that impose different rules.
+
+### Implementation Status (v0.1)
+
+The context system is partially implemented. The following features work in the current runtime:
+
+- Declaring contexts with `confidence-threshold` and `error-tolerance`
+- Tagging individual facts with a `context:` annotation
+- Threshold filtering during inference (wired up as of v0.1)
+
+The following features are **planned but not yet implemented**:
+
+- `within` block syntax for lexically scoped context activation
+- Context inheritance (`extends`)
+- `visible-fact-tags` / `hidden-fact-tags` whitelist/blacklist filtering
+- Context merge semantics on module import
 
 ---
 
 ## Declaration Syntax
 
 ```logos
-context <name> :
-    confidence-threshold : <number 0.0–1.0>
-    error-tolerance      : <level>           // strict | lenient | permissive
-    visible-fact-tags    : [<tag>, ...]      // optional whitelist
-    hidden-fact-tags     : [<tag>, ...]      // optional blacklist
-    <additional settings>
+context <name>:
+    confidence-threshold: <number 0.0–1.0>
+    error-tolerance: <level>    // zero | low | medium | high
 ```
 
 Example:
 
 ```logos
-context Production :
-    confidence-threshold : 0.85
-    error-tolerance      : strict
+context Production:
+    confidence-threshold: 0.99
+    error-tolerance: zero
 
-context Staging :
-    confidence-threshold : 0.65
-    error-tolerance      : lenient
-
-context Testing :
-    confidence-threshold : 0.50
-    error-tolerance      : permissive
-    hidden-fact-tags     : [external-data]
+context Development:
+    confidence-threshold: 0.50
+    error-tolerance: high
 ```
 
 ---
 
 ## Confidence Threshold
 
-The `confidence-threshold` setting is the floor below which any inferred or asserted fact is treated as **absent** within that context. A fact with confidence 0.70 is visible in `Testing` (threshold 0.50) but invisible in `Production` (threshold 0.85).
+The `confidence-threshold` setting is the floor below which any inferred or asserted fact is treated as **absent** within that context. A fact with confidence 0.70 is usable in `Development` (threshold 0.50) but not in `Production` (threshold 0.99).
 
-This allows the same base rules and facts to produce different query results depending on operational requirements. In production you want high certainty; in testing you want to see candidate facts that are still being refined.
+This allows the same base rules and facts to produce different query results depending on operational requirements. In production you want high certainty; in development you want to see candidate facts that are still being refined.
 
 ```logos
-context HighAssurance :
-    confidence-threshold : 0.95
+context HighAssurance:
+    confidence-threshold: 0.95
 
-context Research :
-    confidence-threshold : 0.30
+context Research:
+    confidence-threshold: 0.30
 ```
 
 Within `HighAssurance`, a query `find P where can-vote(P)` returns only persons for whom `can-vote` is inferred with confidence >= 0.95. Within `Research`, the same query returns anyone for whom there is at least weak evidence.
@@ -56,221 +63,153 @@ Within `HighAssurance`, a query `find P where can-vote(P)` returns only persons 
 
 ## Error Tolerance Levels
 
-| Level         | Behavior                                                                                  |
-|---------------|-------------------------------------------------------------------------------------------|
-| `strict`      | Any contradiction among visible facts raises a `ContradictionError` and halts inference   |
-| `lenient`     | Contradictions are logged; the higher-confidence fact wins; inference continues            |
-| `permissive`  | Contradictions are silently resolved by recency; no error is raised                       |
+The `error-tolerance` setting controls how contradictions among visible facts are handled. The valid levels are:
+
+| Level | Numeric Value | Behavior |
+|-------|--------------|----------|
+| `zero` | 0.0 | No tolerance for contradictions; errors are raised immediately |
+| `low` | 0.1 | Minor contradictions are logged; significant ones raise errors |
+| `medium` | 0.3 | Contradictions are logged; inference continues with the higher-confidence fact (default) |
+| `high` | 0.7 | Contradictions are silently resolved; inference always continues |
 
 ```logos
-context AuditableDecisions :
-    confidence-threshold : 0.90
-    error-tolerance      : strict    // any contradiction must be investigated
+context AuditableDecisions:
+    confidence-threshold: 0.90
+    error-tolerance: zero    // any contradiction must be investigated
 ```
 
 ---
 
 ## Context Inheritance
 
-A context may extend another context, inheriting all its settings and overriding specific ones:
+> **Planned (not yet implemented):** Context inheritance via `extends` is not yet supported in the runtime.
+
+The intended syntax when implemented:
 
 ```logos
-context Base :
-    confidence-threshold : 0.70
-    error-tolerance      : lenient
+// Planned syntax:
+context Base:
+    confidence-threshold: 0.70
+    error-tolerance: medium
 
-context EU extends Base :
-    confidence-threshold : 0.80     // override
-    visible-fact-tags    : [gdpr-compliant]
+context EU extends Base:
+    confidence-threshold: 0.80
 
-context US extends Base :
-    hidden-fact-tags     : [eu-only]
+context US extends Base:
+    confidence-threshold: 0.75
 ```
-
-Inheritance is single: a context extends at most one parent. Settings not overridden are inherited verbatim. The `Base` context is implicitly extended by all user-defined contexts that do not name a parent, unless a default is declared (see Default Context).
 
 ---
 
 ## Activating a Context
 
-Use the `within` block to execute queries and transforms under a specific context:
+> **Planned (not yet implemented):** The `within` block for lexically scoped context activation is not yet implemented in the runtime.
+
+The intended syntax when implemented:
 
 ```logos
-within Production :
+// Planned syntax — not yet implemented:
+within Production:
     let result = find P where can-vote(P)
-    assert AuditLog : query = "can-vote", result-count = count(result)
 ```
 
-The `within` block is lexically scoped. Any query, transform invocation, or assertion inside the block runs under the named context. Nested `within` blocks replace the active context for their scope:
+In the current runtime, contexts are declared and facts are tagged with a context annotation, but there is no `within` block. The active context affects threshold filtering globally for a given query execution.
+
+---
+
+## Tagging Facts with a Context
+
+Facts can be annotated with a `context:` tag to associate them with a specific context:
 
 ```logos
-within Production :
-    let prod-result = find P where eligible(P)
+temperature of sensor-1 := 72.4
+  confidence: 0.99
+  provenance: "calibrated-sensor"
+  context: Production
 
-    within Staging :
-        let staging-result = find P where eligible(P)
-        // uses Staging thresholds
-    // back to Production here
+temperature of sensor-2 := 68.0
+  confidence: 0.7
+  provenance: "uncalibrated-sensor"
+  context: Development
 ```
+
+The `context:` annotation tags the fact for organizational and filtering purposes. Full tag-based whitelist/blacklist filtering (`visible-fact-tags` / `hidden-fact-tags`) is **planned but not yet implemented**.
 
 ---
 
 ## Default Context
 
-Every Logos program has an implicit **default context** named `Default`:
+Every Logos program has an implicit **default context** with the following settings:
 
 ```logos
-context Default :
-    confidence-threshold : 0.50
-    error-tolerance      : lenient
+context Default:
+    confidence-threshold: 0.0
+    error-tolerance: medium
 ```
 
-Programs that do not declare any context or use any `within` block run under `Default`. The program may override `Default` by declaring a context with that name:
+Programs that do not declare any context run under these defaults. The program may override the defaults by declaring a context with the name `Default`:
 
 ```logos
-context Default :
-    confidence-threshold : 0.75
-    error-tolerance      : strict
+context Default:
+    confidence-threshold: 0.75
+    error-tolerance: low
 ```
-
-This changes the baseline for the entire program. It is good practice to declare an explicit `Default` so behavior is unambiguous.
 
 ---
 
 ## How Contexts Filter Facts
 
-When a context becomes active, the executor applies two filters to the semantic graph:
+When a context is active, the runtime applies a **confidence filter**: facts with a confidence score below `confidence-threshold` are excluded from inference and queries.
 
-1. **Tag filter** — facts tagged with a tag in `hidden-fact-tags` are excluded from the visible subgraph. Facts tagged with a tag in `visible-fact-tags` (if the list is non-empty) are included; all others are excluded.
+The filtered subgraph is what inference and queries operate on. Facts below the threshold do not participate in rule firing or unification.
 
-2. **Confidence filter** — facts with a confidence score below `confidence-threshold` are excluded.
-
-The filtered subgraph is what inference and queries operate on. Facts outside the filtered subgraph do not participate in rule firing or unification.
-
-```logos
-assert PersonFact : name = "Alice", age = 30
-    tags : [verified, gdpr-compliant]
-
-assert PersonFact : name = "Bob", age = 25
-    tags : [unverified]
-
-context EU extends Base :
-    visible-fact-tags : [gdpr-compliant]
-```
-
-Within `EU`, only Alice's fact is visible. Queries for Bob return no results.
-
----
-
-## Context-Sensitive Queries
-
-Queries are always evaluated against the active context. The result type carries the context name in its provenance:
-
-```logos
-within Production :
-    let voters = find P where can-vote(P)
-    // voters.provenance.context = "Production"
-```
-
-A single query variable may be resolved in multiple contexts for comparison:
-
-```logos
-let prod-voters    = within Production : find P where can-vote(P)
-let staging-voters = within Staging    : find P where can-vote(P)
-let diff = prod-voters difference staging-voters
-```
-
----
-
-## Multiple Active Contexts
-
-At any point in execution, exactly one context is active (the innermost `within` scope). There is no concept of simultaneously active contexts for a single query; however, a program may merge results from queries run under different contexts:
-
-```logos
-let conservative = within HighAssurance : find P where eligible(P)
-let liberal      = within Research      : find P where eligible(P)
-
-let agreed-set   = conservative intersection liberal
-let uncertain    = liberal difference conservative
-```
-
-This pattern is useful for identifying facts that are borderline — visible in a lenient context but not in a strict one.
-
----
-
-## Context Merge Semantics on Import
-
-When a module is imported, its context declarations are merged into the importing program's context namespace. If two modules declare a context with the same name, the rules are:
-
-1. If the declarations are identical, they merge without conflict.
-2. If the declarations differ, the importing program's declaration takes precedence, and a `ContextConflictWarning` is emitted at load time.
-3. If neither module is the importer (both are library modules), a `ContextConflictError` is raised.
-
-```logos
-import voting from rules.logos     // declares context Production
-import payments from finance.logos // declares context Production (different settings)
-// Warning: ContextConflictWarning on "Production"; importer's definition wins
-```
-
-To avoid conflicts, library modules should use namespaced context names:
-
-```logos
-context voting.Production :
-    confidence-threshold : 0.90
-```
+> **Planned:** Tag-based filtering (`visible-fact-tags` / `hidden-fact-tags`) will add a second dimension of filtering. When implemented, the executor will apply both the confidence filter and the tag filter together.
 
 ---
 
 ## Practical Patterns
 
-### Environment-Gated Assertions
+### Environment-Gated Facts
 
 ```logos
-context Production :
-    confidence-threshold : 0.85
-    error-tolerance      : strict
+context Production:
+    confidence-threshold: 0.85
+    error-tolerance: zero
 
-context Development :
-    confidence-threshold : 0.40
-    error-tolerance      : permissive
+context Development:
+    confidence-threshold: 0.40
+    error-tolerance: high
 
-// assert a test fact only visible in Development
-assert TestPersonFact : name = "TestUser", age = 20
-    tags : [dev-only]
-
-context Development :
-    visible-fact-tags : [dev-only]
+// A test fact tagged for Development only
+temperature of test-sensor := 55.0
+  confidence: 0.6
+  provenance: "synthetic"
+  context: Development
 ```
 
 ### Jurisdictional Contexts
 
 ```logos
-context EU extends Base :
-    confidence-threshold : 0.80
-    visible-fact-tags    : [gdpr-compliant]
-    hidden-fact-tags     : [us-only]
+context EU:
+    confidence-threshold: 0.80
+    error-tolerance: low
 
-context US extends Base :
-    confidence-threshold : 0.75
-    hidden-fact-tags     : [eu-only]
-
-transform eligible-for-service [user: Person, jurisdiction: Jurisdiction] → Boolean :
-    intent : "Determine if a user is eligible under the applicable legal context"
-    within jurisdiction.context :
-        result = can-use-service(user) = true
+context US:
+    confidence-threshold: 0.75
+    error-tolerance: medium
 ```
 
 ### Progressive Confidence Degradation
 
 ```logos
-context Realtime :
-    confidence-threshold : 0.90
+context Realtime:
+    confidence-threshold: 0.90
 
-context Batch :
-    confidence-threshold : 0.70
+context Batch:
+    confidence-threshold: 0.70
 
-context Archive :
-    confidence-threshold : 0.40
+context Archive:
+    confidence-threshold: 0.40
 ```
 
 Higher thresholds in real-time contexts ensure only well-supported facts drive live decisions; lower thresholds in archival contexts allow historical analysis of weaker evidence.
@@ -279,9 +218,9 @@ Higher thresholds in real-time contexts ensure only well-supported facts drive l
 
 ## Summary
 
-- Contexts are named configuration envelopes that adjust confidence thresholds, error tolerance, and fact visibility.
-- They are declared with `context Name :` and activated with `within Name :` blocks.
-- Contexts support single inheritance via `extends`.
-- Fact filtering is two-dimensional: by tag whitelist/blacklist and by confidence threshold.
-- Exactly one context is active at any point; multiple contexts can be composed by running separate queries and merging results.
-- Imported context declarations merge into the global namespace with importing-program precedence.
+- Contexts are named configuration envelopes that adjust confidence thresholds and error tolerance.
+- They are declared with `context Name:` and activated globally for a query execution.
+- Error tolerance uses the levels `zero`, `low`, `medium`, and `high`.
+- Facts can be tagged with a `context:` annotation for organizational purposes.
+- The default context has threshold 0.0 and `medium` error tolerance.
+- Context inheritance (`extends`), `within` blocks, and tag-based whitelist/blacklist filtering are planned for a future version.
