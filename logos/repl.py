@@ -260,9 +260,26 @@ def main():
     run_cmd.add_argument("file", help="Path to .logos file")
     interp_cmd = sub.add_parser("interpret", help="Run a .logos file via interpreter.logos (self-hosting)")
     interp_cmd.add_argument("file", help="Path to .logos file to interpret")
+    compile_cmd = sub.add_parser("compile", help="Compile a .logos file to a native binary")
+    compile_cmd.add_argument("file", help="Path to .logos file")
+    compile_cmd.add_argument("-o", "--output", help="Output binary path (default: file without extension)")
+    compile_cmd.add_argument("--cc", default="cc", help="C compiler to use (default: cc)")
+    compile_cmd.add_argument("--keep-c", action="store_true", help="Keep generated .c file")
     args = ap.parse_args()
 
-    if args.command == "repl" or args.command is None:
+    if args.command == "compile":
+        import os
+        from logos.compiler import compile_file, CompilationError
+        output = args.output
+        if output is None:
+            output = os.path.splitext(args.file)[0]
+        try:
+            compile_file(args.file, output, cc=args.cc, keep_c=args.keep_c)
+            print(f"Compiled: {output}")
+        except CompilationError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            sys.exit(1)
+    elif args.command == "repl" or args.command is None:
         LogosREPL().run()
     elif args.command == "run":
         from logos.executor import Executor
