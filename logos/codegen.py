@@ -181,8 +181,8 @@ class Compiler:
     def _pred_param_decl(self, rule: InferenceRule) -> str:
         parts = []
         seen: dict[str, int] = {}
-        for arg in rule.head.args:
-            base = self._head_arg_cname(arg)
+        for pos, arg in enumerate(rule.head.args):
+            base = self._head_arg_cname(arg, pos)
             if base in seen:
                 seen[base] += 1
                 cname = f"{base}_{seen[base]}"
@@ -195,8 +195,8 @@ class Compiler:
     def _pred_param_pass(self, rule: InferenceRule) -> str:
         parts = []
         seen: dict[str, int] = {}
-        for arg in rule.head.args:
-            base = self._head_arg_cname(arg)
+        for pos, arg in enumerate(rule.head.args):
+            base = self._head_arg_cname(arg, pos)
             if base in seen:
                 seen[base] += 1
                 cname = f"{base}_{seen[base]}"
@@ -206,13 +206,14 @@ class Compiler:
             parts.append(f"var_{cname}")
         return ", ".join(parts)
 
-    def _head_arg_cname(self, arg: Any) -> str:
+    def _head_arg_cname(self, arg: Any, pos: int = 0) -> str:
         if isinstance(arg, Variable):
             return _c_id(arg.name)
         elif isinstance(arg, Path):
             return _c_id(arg.root())
         else:
-            return "arg"
+            # ListLit or constant: use position-based name
+            return f"_harg{pos}"
 
     # ── Rule functions ────────────────────────────────────────────────────────
 
@@ -512,15 +513,24 @@ class RuleEmitter:
         self._var_map: dict[str, str] = {}
         self._head_param_names: list[str] = []  # cname per head arg position
         self._head_dup_pairs:   list[tuple[str, str]] = []  # (first, dup)
+        # ListLit head pattern args: (pos, param_cname, ListLit node)
+        self._head_pattern_args: list[tuple[int, str, ListLit]] = []
+        # Variables extracted from head ListLit patterns (need logos_alloc_var)
+        self._head_list_vars: list[str] = []
 
+        # Pass 1: build _head_param_names and populate _var_map for plain vars.
         seen: dict[str, str] = {}  # base_cname → first param cname
-        for arg in rule.head.args:
+        for pos, arg in enumerate(rule.head.args):
             if isinstance(arg, Variable):
                 base = _c_id(arg.name)
+                is_plain_var = True
             elif isinstance(arg, Path) and len(arg.parts) == 1:
                 base = _c_id(arg.parts[0])
+                is_plain_var = True
             else:
-                base = "arg"
+                # ListLit or constant: position-based name
+                base = f"_harg{pos}"
+                is_plain_var = False
 
             if base in seen:
                 cnt = sum(1 for n in self._head_param_names if n.startswith(base))
@@ -529,9 +539,29 @@ class RuleEmitter:
             else:
                 cname = base
                 seen[base] = cname
-                self._var_map[base] = f"var_{base}"
+                if is_plain_var:
+                    self._var_map[base] = f"var_{base}"
 
             self._head_param_names.append(cname)
+
+        # Pass 2: for all non-plain-variable head args (ListLit or constants),
+        # record them for pattern unification at rule entry.  All plain-var
+        # params are now in _var_map, so shared variables (appearing in both a
+        # ListLit and another head arg position) are correctly excluded from
+        # _head_list_vars.
+        for pos, arg in enumerate(rule.head.args):
+            is_plain_var = (
+                isinstance(arg, Variable)
+                or (isinstance(arg, Path) and len(arg.parts) == 1)
+            )
+            if not is_plain_var:
+                cname = self._head_param_names[pos]
+                self._head_pattern_args.append((pos, cname, arg))
+                if isinstance(arg, ListLit):
+                    for v in self._extract_list_vars(arg):
+                        if v not in self._var_map:
+                            self._head_list_vars.append(v)
+                            self._var_map[v] = f"var_{_c_id(v)}"
 
         # Body-local variables: Variables in conditions not already in head
         self._body_vars: list[str] = self._collect_body_vars()
@@ -565,6 +595,24 @@ class RuleEmitter:
         for cond in self.rule.conditions:
             body_vars |= scan(cond)
         return sorted(v for v in body_vars if v not in self._var_map)
+
+    def _extract_list_vars(self, listlit: ListLit) -> list[str]:
+        """Extract variable names embedded in a ListLit head pattern.
+
+        Variables appear as single-part Path objects whose first character
+        is uppercase (Logos convention).  Recurses into nested ListLits.
+        """
+        result: list[str] = []
+        for elt in listlit.elements:
+            if isinstance(elt, Path) and len(elt.parts) == 1:
+                name = elt.parts[0]
+                if name and name[0].isupper():
+                    result.append(name)
+            elif isinstance(elt, Variable):
+                result.append(elt.name)
+            elif isinstance(elt, ListLit):
+                result.extend(self._extract_list_vars(elt))
+        return result
 
     # ── Variable map initialisation ───────────────────────────────────────────
 
@@ -601,6 +649,24 @@ class RuleEmitter:
             return self._emit_cps_rule(splits)
         return self._emit_simple_rule()
 
+    # ── Head pattern unification helper ──────────────────────────────────────
+
+    def _emit_head_pattern_unifications(self, lines: list[str]) -> None:
+        """Allocate head-extracted list vars and unify all head pattern args.
+
+        Handles ListLit patterns (which may contain variables) and scalar
+        constants (strings, numbers, etc.) at non-variable head positions.
+        """
+        for v in self._head_list_vars:
+            lines.append(f"    logos_term var_{_c_id(v)} = logos_alloc_var(env);")
+        for _pos, param_cn, pattern in self._head_pattern_args:
+            setup: list[str] = []
+            pattern_expr = self._emit_term(pattern, setup)
+            lines.extend(setup)
+            lines.append(
+                f"    if (!logos_unify(env, var_{param_cn}, {pattern_expr})) return 0;"
+            )
+
     # ── Simple rule (no user-defined predicate calls) ─────────────────────────
 
     def _emit_simple_rule(self) -> str:
@@ -618,6 +684,7 @@ class RuleEmitter:
             lines.append(
                 f"    if (!logos_unify(env, var_{first_cn}, var_{dup_cn})) return 0;"
             )
+        self._emit_head_pattern_unifications(lines)
         for i, cond in enumerate(self.rule.conditions):
             lines.extend(self._emit_cond(cond, i))
         lines.append("    env->confidence = logos_degrade(env->confidence);")
@@ -720,6 +787,7 @@ class RuleEmitter:
             lines.append(
                 f"    if (!logos_unify(env, var_{first_cn}, var_{dup_cn})) return 0;"
             )
+        self._emit_head_pattern_unifications(lines)
         # Inline conditions before first split
         for i in range(first_sp):
             lines.extend(self._emit_cond(conds[i], i))
