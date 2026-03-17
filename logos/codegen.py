@@ -887,40 +887,47 @@ class RuleEmitter:
     # ── Comparison condition ──────────────────────────────────────────────────
 
     def _emit_comparison(self, cond: Comparison, idx: int) -> list[str]:
-        left  = cond.left
-        op    = cond.op
-        right = cond.right
+        left   = cond.left
+        op     = cond.op
+        right  = cond.right
+        op_num = _OP_MAP.get(op, 4)
 
-        if not (isinstance(left, Path) and len(left.parts) == 2):
-            raise CompilationError(
-                f"Comparison left side must be a two-part path (e.g. P.age); "
-                f"got: {left}"
-            )
+        # Graph-path comparison: subject.predicate OP value
+        if isinstance(left, Path) and len(left.parts) == 2:
+            subj_part = left.parts[0]
+            pred_part = left.parts[1]
+            c_subj    = self._resolve_var(subj_part)
 
-        subj_part = left.parts[0]
-        pred_part = left.parts[1]
-        c_subj    = self._resolve_var(subj_part)
-        op_num    = _OP_MAP.get(op, 4)
+            setup: list[str] = []
+            rhs_expr = self._emit_term(right, setup)
 
-        setup: list[str] = []
-        rhs_expr = self._emit_term(right, setup)
+            lines = [f"    /* {left} {op} {right} */", "    {"]
+            lines.extend(setup)
+            lines += [
+                f"        logos_term _val_{idx}; double _conf_{idx};",
+                f"        if (!logos_graph_lookup(env->graph,",
+                f'                logos_walk(env, {c_subj}).s, "{_esc(pred_part)}",',
+                f"                &_val_{idx}, &_conf_{idx})) return 0;",
+                f"        logos_term _rhs_{idx} = {rhs_expr};",
+                f"        if (!logos_compare(_val_{idx}, {op_num}, _rhs_{idx})) return 0;",
+                f"        env->confidence = logos_conjoin(env->confidence, _conf_{idx});",
+                "    }",
+            ]
+            return lines
 
-        lines = [
-            f"    /* {left} {op} {right} */",
-            f"    {{",
-        ]
-        lines.extend(setup)
-        lines += [
-            f"        logos_term _val_{idx}; double _conf_{idx};",
-            f"        if (!logos_graph_lookup(env->graph,",
-            f'                logos_walk(env, {c_subj}).s, "{_esc(pred_part)}",',
-            f"                &_val_{idx}, &_conf_{idx})) return 0;",
-            f"        logos_term _rhs_{idx} = {rhs_expr};",
-            f"        if (!logos_compare(_val_{idx}, {op_num}, _rhs_{idx})) return 0;",
-            f"        env->confidence = logos_conjoin(env->confidence, _conf_{idx});",
-            f"    }}",
-        ]
-        return lines
+        # Direct comparison: variable/literal OP variable/literal
+        # Both sides are resolved as terms and walked before comparing.
+        setup2: list[str] = []
+        lhs_expr = self._emit_term(left,  setup2)
+        rhs_expr = self._emit_term(right, setup2)
+        lines2 = [f"    /* {left} {op} {right} */"]
+        lines2.extend(setup2)
+        lines2.append(
+            f"    if (!logos_compare("
+            f"logos_walk(env, {lhs_expr}), {op_num}, "
+            f"logos_walk(env, {rhs_expr}))) return 0;"
+        )
+        return lines2
 
     # ── Predicate call condition ──────────────────────────────────────────────
 
