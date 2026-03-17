@@ -1,0 +1,91 @@
+// stdlib/lists.logos — Standard list predicates
+// Built on list-* native primitives (Phase B).
+
+// ── Membership ─────────────────────────────────────────────────────────────
+
+// list-member(X, L) — X is a member of list L
+list-member(X, L) if:
+  list-cons(X, T, L)
+
+list-member(X, L) if:
+  list-cons(H, T, L)
+  list-member(X, T)
+
+// ── Last element ────────────────────────────────────────────────────────────
+
+// list-last(X, L) — X is the last element of L
+list-last(X, L) if:
+  list-cons(X, T, L)
+  list-empty(T)
+
+list-last(X, L) if:
+  list-cons(H, T, L)
+  list-member(X, T)
+  list-last(X, T)
+
+// ── Prefix / suffix ─────────────────────────────────────────────────────────
+
+// list-prefix(Prefix, List) — Prefix is a prefix of List
+list-prefix(P, L) if:
+  list-empty(P)
+
+list-prefix(P, L) if:
+  list-cons(H, PT, P)
+  list-cons(H, LT, L)
+  list-prefix(PT, LT)
+
+// list-suffix(Suffix, List) — Suffix is a suffix of List
+list-suffix(S, S) if:
+  list-empty(S)
+
+list-suffix(S, L) if:
+  list-cons(H, T, L)
+  list-suffix(S, T)
+
+// ── Zip / pairs ─────────────────────────────────────────────────────────────
+
+// list-zip-with(A, B, Pair) — Pair = [A[i], B[i]] for corresponding elements
+// (yields one Pair per corresponding pair of elements)
+list-zip-elem(A, B, Pair) if:
+  list-cons(AH, AT, A)
+  list-cons(BH, BT, B)
+  list-cons(AH, BH, PairHead)
+  list-zip-elem(AT, BT, PairTail)
+  list-cons(PairHead, PairTail, Pair)
+
+list-zip-elem(A, B, Pair) if:
+  list-empty(A)
+  list-empty(B)
+  list-empty(Pair)
+
+// ── Numeric aggregates ──────────────────────────────────────────────────────
+
+// list-sum(List, Sum) — Sum = sum of all elements in List (must be numbers)
+list-sum(L, S) if:
+  list-empty(L)
+  equal(S, 0.0)
+
+list-sum(L, S) if:
+  list-cons(H, T, L)
+  list-sum(T, TailSum)
+  num-add(H, TailSum, S)
+
+// list-max(List, Max) — Max is the maximum element in List
+list-max(L, M) if:
+  list-cons(M, T, L)
+  list-empty(T)
+
+list-max(L, M) if:
+  list-cons(H, T, L)
+  list-max(T, TailMax)
+  num-max(H, TailMax, M)
+
+// list-min(List, Min) — Min is the minimum element in List
+list-min(L, M) if:
+  list-cons(M, T, L)
+  list-empty(T)
+
+list-min(L, M) if:
+  list-cons(H, T, L)
+  list-min(T, TailMin)
+  num-min(H, TailMin, M)

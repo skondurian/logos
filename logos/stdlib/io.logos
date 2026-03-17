@@ -1,0 +1,31 @@
+// stdlib/io.logos — File and output utilities
+// Built on read-file, write-output, write-line native primitives (Phase B).
+
+// ── Output helpers ──────────────────────────────────────────────────────────
+
+// print(Text) — alias for write-line
+print(Text) if:
+  write-line(Text)
+
+// print-value(Label, Value) — prints "Label: Value"
+print-value(Label, Value) if:
+  number-to-str(Value, Str)
+  str-concat3(Label, ": ", Str, Line)
+  write-line(Line)
+
+// print-labeled(Label, Text) — prints "Label: Text"
+print-labeled(Label, Text) if:
+  str-concat3(Label, ": ", Text, Line)
+  write-line(Line)
+
+// ── File utilities ──────────────────────────────────────────────────────────
+
+// file-lines(Path, Lines) — reads a file and splits it into lines
+file-lines(Path, Lines) if:
+  read-file(Path, Content)
+  str-split(Content, "\n", Lines)
+
+// file-chars(Path, Chars) — reads a file and splits it into characters
+file-chars(Path, Chars) if:
+  read-file(Path, Content)
+  str-split(Content, "", Chars)

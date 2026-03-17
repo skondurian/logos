@@ -1,0 +1,28 @@
+// logos/interpreter.logos — Logos interpreter in Logos (Phase G / v1.0)
+//
+// This is the self-hosting interpreter: given a source file path, it:
+//   1. Reads the file into a string (read-file primitive)
+//   2. Tokenizes the string (lex-string from lexer.logos)
+//   3. Converts flat token list to Python-lexer format (with INDENT/DEDENT)
+//   4. Parses the tokens (parse-tokens from parser.logos)
+//   5. Evaluates the AST (eval-program from evaluator.logos)
+//
+// NOTE: Steps 2-3 use the Python tokenizer via the lex-file primitive,
+// which produces the INDENT/DEDENT-annotated token stream required by
+// parser.logos.
+//
+// Entry point:
+//   interpret(FilePath)
+//
+// Usage:
+//   interpret("examples/02_voting_rules.logos")
+
+import * from "stdlib/lists"
+
+// ── Entry point ────────────────────────────────────────────────────────────
+
+// interpret(FilePath) — read, tokenize, parse, and evaluate a .logos file
+interpret(FilePath) if:
+  lex-file(FilePath, Tokens)
+  parse-tokens(Tokens, AST)
+  eval-program(AST)

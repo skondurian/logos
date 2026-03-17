@@ -1,0 +1,364 @@
+// logos/lexer.logos — Logos lexer in Logos (Phase D of self-hosting roadmap)
+//
+// Tokenizes a source string into a list of [type, value] token pairs.
+// Uses str-* and list-* native primitives for character-level work.
+//
+// Entry point:
+//   lex-string(Source, Tokens)
+//
+// Each token is a 2-element list [type, value], e.g. ["IDENTIFIER", "alice"]
+
+import * from "stdlib/lists"
+import * from "stdlib/strings"
+
+// ── Keyword / duration-unit tables ───────────────────────────────────────────
+
+logos-keyword("if")
+logos-keyword("where")
+logos-keyword("find")
+logos-keyword("query")
+logos-keyword("import")
+logos-keyword("from")
+logos-keyword("not")
+logos-keyword("retract")
+logos-keyword("context")
+logos-keyword("transform")
+logos-keyword("within")
+logos-keyword("true")
+logos-keyword("false")
+logos-keyword("True")
+logos-keyword("False")
+logos-keyword("absolute")
+logos-keyword("zero")
+logos-keyword("low")
+logos-keyword("medium")
+logos-keyword("high")
+logos-keyword("fallback")
+logos-keyword("confidence")
+logos-keyword("provenance")
+logos-keyword("considering")
+logos-keyword("maximize")
+logos-keyword("minimize")
+logos-keyword("require")
+logos-keyword("intent")
+logos-keyword("of")
+logos-keyword("and")
+logos-keyword("or")
+
+logos-duration-unit("years")
+logos-duration-unit("year")
+logos-duration-unit("months")
+logos-duration-unit("month")
+logos-duration-unit("days")
+logos-duration-unit("day")
+logos-duration-unit("hours")
+logos-duration-unit("hour")
+logos-duration-unit("minutes")
+logos-duration-unit("minute")
+logos-duration-unit("seconds")
+logos-duration-unit("second")
+
+// ── Character classification ──────────────────────────────────────────────────
+
+// is-newline(C) — C is the newline character (ASCII 10)
+is-newline(C) if:
+  char-code(C, 10.0)
+
+// is-ws-not-nl(C) — C is whitespace but not newline
+is-ws-not-nl(C) if:
+  char-whitespace(C)
+  not is-newline(C)
+
+// ident-start(C) — C can start a Logos identifier
+ident-start(C) if:
+  char-alpha(C)
+
+// ident-cont(C) — C can continue a Logos identifier
+ident-cont(C) if:
+  char-alnum(C)
+
+ident-cont(C) if:
+  equal(C, "_")
+
+ident-cont(C) if:
+  equal(C, "-")
+
+// first-char(Chars, C) — C is the first element of Chars
+first-char(Chars, C) if:
+  list-cons(C, Rest, Chars)
+
+// ── Word classification ───────────────────────────────────────────────────────
+
+classify-word(Word, "DURATION_UNIT") if:
+  logos-duration-unit(Word)
+
+classify-word(Word, "KEYWORD") if:
+  not logos-duration-unit(Word)
+  logos-keyword(Word)
+
+classify-word(Word, "VARIABLE") if:
+  not logos-keyword(Word)
+  not logos-duration-unit(Word)
+  str-char-at(Word, 0.0, C)
+  char-alpha(C)
+  str-upper(C, CU)
+  equal(C, CU)
+
+classify-word(Word, "IDENTIFIER") if:
+  not logos-keyword(Word)
+  not logos-duration-unit(Word)
+  str-char-at(Word, 0.0, C)
+  char-alpha(C)
+  str-lower(C, CL)
+  equal(C, CL)
+
+// ── Main tokenization loop ────────────────────────────────────────────────────
+
+// Base case: empty input
+lex-chars(Chars, Tokens) if:
+  list-empty(Chars)
+  equal(Tokens, [])
+
+// Skip non-newline whitespace
+lex-chars(Chars, Tokens) if:
+  list-cons(C, Rest, Chars)
+  is-ws-not-nl(C)
+  lex-chars(Rest, Tokens)
+
+// Newline token
+lex-chars(Chars, Tokens) if:
+  list-cons(C, Rest, Chars)
+  is-newline(C)
+  lex-chars(Rest, RestTokens)
+  list-cons(["NEWLINE", "\\n"], RestTokens, Tokens)
+
+// Comment: skip // to end of line
+lex-chars(Chars, Tokens) if:
+  list-cons("/", Rest1, Chars)
+  list-cons("/", Rest2, Rest1)
+  lex-skip-line(Rest2, AfterComment)
+  lex-chars(AfterComment, Tokens)
+
+// String literal: "..."
+lex-chars(Chars, Tokens) if:
+  list-cons("\"", Rest, Chars)
+  lex-string-body(Rest, Body, AfterStr)
+  str-join(Body, "", BodyStr)
+  str-concat3("\"", BodyStr, "\"", FullStr)
+  lex-chars(AfterStr, RestTokens)
+  list-cons(["STRING", FullStr], RestTokens, Tokens)
+
+// Number: digit sequence (integer only for now)
+lex-chars(Chars, Tokens) if:
+  list-cons(C, Rest, Chars)
+  char-digit(C)
+  lex-digits(Rest, Body, AfterNum)
+  list-cons(C, Body, AllChars)
+  str-join(AllChars, "", NumStr)
+  lex-chars(AfterNum, RestTokens)
+  list-cons(["NUMBER", NumStr], RestTokens, Tokens)
+
+// Identifier / keyword / variable / duration-unit
+lex-chars(Chars, Tokens) if:
+  list-cons(C, Rest, Chars)
+  ident-start(C)
+  lex-ident-body(Rest, Body, AfterIdent)
+  list-cons(C, Body, AllChars)
+  str-join(AllChars, "", Word)
+  classify-word(Word, Type)
+  lex-chars(AfterIdent, RestTokens)
+  list-cons([Type, Word], RestTokens, Tokens)
+
+// ── Two-character operators ───────────────────────────────────────────────────
+
+lex-chars(Chars, Tokens) if:
+  list-cons(":", Rest1, Chars)
+  list-cons("=", Rest2, Rest1)
+  lex-chars(Rest2, RestTokens)
+  list-cons(["ASSIGN", ":="], RestTokens, Tokens)
+
+lex-chars(Chars, Tokens) if:
+  list-cons(">", Rest1, Chars)
+  list-cons("=", Rest2, Rest1)
+  lex-chars(Rest2, RestTokens)
+  list-cons(["OP_GEQ", ">="], RestTokens, Tokens)
+
+lex-chars(Chars, Tokens) if:
+  list-cons("<", Rest1, Chars)
+  list-cons("=", Rest2, Rest1)
+  lex-chars(Rest2, RestTokens)
+  list-cons(["OP_LEQ", "<="], RestTokens, Tokens)
+
+lex-chars(Chars, Tokens) if:
+  list-cons("!", Rest1, Chars)
+  list-cons("=", Rest2, Rest1)
+  lex-chars(Rest2, RestTokens)
+  list-cons(["OP_NEQ", "!="], RestTokens, Tokens)
+
+lex-chars(Chars, Tokens) if:
+  list-cons("-", Rest1, Chars)
+  list-cons(">", Rest2, Rest1)
+  lex-chars(Rest2, RestTokens)
+  list-cons(["ARROW", "->"], RestTokens, Tokens)
+
+// ── Single-character tokens (guarded where needed) ────────────────────────────
+
+lex-chars(Chars, Tokens) if:
+  list-cons(":", Rest, Chars)
+  not first-char(Rest, "=")
+  lex-chars(Rest, RestTokens)
+  list-cons(["COLON", ":"], RestTokens, Tokens)
+
+lex-chars(Chars, Tokens) if:
+  list-cons(".", Rest, Chars)
+  lex-chars(Rest, RestTokens)
+  list-cons(["DOT", "."], RestTokens, Tokens)
+
+lex-chars(Chars, Tokens) if:
+  list-cons(",", Rest, Chars)
+  lex-chars(Rest, RestTokens)
+  list-cons(["COMMA", ","], RestTokens, Tokens)
+
+lex-chars(Chars, Tokens) if:
+  list-cons("(", Rest, Chars)
+  lex-chars(Rest, RestTokens)
+  list-cons(["LPAREN", "("], RestTokens, Tokens)
+
+lex-chars(Chars, Tokens) if:
+  list-cons(")", Rest, Chars)
+  lex-chars(Rest, RestTokens)
+  list-cons(["RPAREN", ")"], RestTokens, Tokens)
+
+lex-chars(Chars, Tokens) if:
+  list-cons("{", Rest, Chars)
+  lex-chars(Rest, RestTokens)
+  list-cons(["LBRACE", "{"], RestTokens, Tokens)
+
+lex-chars(Chars, Tokens) if:
+  list-cons("}", Rest, Chars)
+  lex-chars(Rest, RestTokens)
+  list-cons(["RBRACE", "}"], RestTokens, Tokens)
+
+lex-chars(Chars, Tokens) if:
+  list-cons("[", Rest, Chars)
+  lex-chars(Rest, RestTokens)
+  list-cons(["LBRACKET", "["], RestTokens, Tokens)
+
+lex-chars(Chars, Tokens) if:
+  list-cons("]", Rest, Chars)
+  lex-chars(Rest, RestTokens)
+  list-cons(["RBRACKET", "]"], RestTokens, Tokens)
+
+lex-chars(Chars, Tokens) if:
+  list-cons("?", Rest, Chars)
+  lex-chars(Rest, RestTokens)
+  list-cons(["QUESTION", "?"], RestTokens, Tokens)
+
+lex-chars(Chars, Tokens) if:
+  list-cons(">", Rest, Chars)
+  not first-char(Rest, "=")
+  lex-chars(Rest, RestTokens)
+  list-cons(["OP_GT", ">"], RestTokens, Tokens)
+
+lex-chars(Chars, Tokens) if:
+  list-cons("<", Rest, Chars)
+  not first-char(Rest, "=")
+  lex-chars(Rest, RestTokens)
+  list-cons(["OP_LT", "<"], RestTokens, Tokens)
+
+lex-chars(Chars, Tokens) if:
+  list-cons("=", Rest, Chars)
+  lex-chars(Rest, RestTokens)
+  list-cons(["OP_EQ", "="], RestTokens, Tokens)
+
+lex-chars(Chars, Tokens) if:
+  list-cons("+", Rest, Chars)
+  lex-chars(Rest, RestTokens)
+  list-cons(["OP_PLUS", "+"], RestTokens, Tokens)
+
+lex-chars(Chars, Tokens) if:
+  list-cons("-", Rest, Chars)
+  not first-char(Rest, ">")
+  lex-chars(Rest, RestTokens)
+  list-cons(["OP_MINUS", "-"], RestTokens, Tokens)
+
+lex-chars(Chars, Tokens) if:
+  list-cons("*", Rest, Chars)
+  lex-chars(Rest, RestTokens)
+  list-cons(["OP_STAR", "*"], RestTokens, Tokens)
+
+lex-chars(Chars, Tokens) if:
+  list-cons("/", Rest, Chars)
+  not first-char(Rest, "/")
+  lex-chars(Rest, RestTokens)
+  list-cons(["OP_SLASH", "/"], RestTokens, Tokens)
+
+lex-chars(Chars, Tokens) if:
+  list-cons("|", Rest, Chars)
+  lex-chars(Rest, RestTokens)
+  list-cons(["PIPE", "|"], RestTokens, Tokens)
+
+// ── Helper rules ──────────────────────────────────────────────────────────────
+
+// lex-skip-line: skip chars until newline or end of input
+lex-skip-line(Chars, Chars) if:
+  list-empty(Chars)
+
+lex-skip-line(Chars, Rest) if:
+  list-cons(C, Rest, Chars)
+  is-newline(C)
+
+lex-skip-line(Chars, After) if:
+  list-cons(C, Rest, Chars)
+  not is-newline(C)
+  lex-skip-line(Rest, After)
+
+// lex-string-body: collect chars until closing quote
+lex-string-body(Chars, Body, After) if:
+  list-cons("\"", After, Chars)
+  equal(Body, [])
+
+lex-string-body(Chars, Body, After) if:
+  list-cons(C, Rest, Chars)
+  not equal(C, "\"")
+  lex-string-body(Rest, BodyTail, After)
+  list-cons(C, BodyTail, Body)
+
+// lex-digits: collect digit characters (for numbers)
+lex-digits(Chars, Body, Chars) if:
+  list-empty(Chars)
+  equal(Body, [])
+
+lex-digits(Chars, Body, Chars) if:
+  list-cons(C, Rest, Chars)
+  not char-digit(C)
+  equal(Body, [])
+
+lex-digits(Chars, Body, After) if:
+  list-cons(C, Rest, Chars)
+  char-digit(C)
+  lex-digits(Rest, Tail, After)
+  list-cons(C, Tail, Body)
+
+// lex-ident-body: collect identifier continuation characters
+lex-ident-body(Chars, Body, Chars) if:
+  list-empty(Chars)
+  equal(Body, [])
+
+lex-ident-body(Chars, Body, Chars) if:
+  list-cons(C, Rest, Chars)
+  not ident-cont(C)
+  equal(Body, [])
+
+lex-ident-body(Chars, Body, After) if:
+  list-cons(C, Rest, Chars)
+  ident-cont(C)
+  lex-ident-body(Rest, Tail, After)
+  list-cons(C, Tail, Body)
+
+// ── Public entry point ────────────────────────────────────────────────────────
+
+// lex-string(Source, Tokens) — tokenize a Logos source string
+lex-string(Source, Tokens) if:
+  str-split(Source, "", Chars)
+  lex-chars(Chars, Tokens)

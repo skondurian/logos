@@ -1,0 +1,418 @@
+// logos/parser.logos — Logos parser in Logos (Phase E of self-hosting roadmap)
+//
+// Takes a token list [Type, Value] pairs and produces a nested-list AST.
+//
+// Token format:    [Type, Value]  e.g. ["KEYWORD", "if"], ["IDENTIFIER", "alice"]
+// INDENT/DEDENT:   ["INDENT", ""], ["DEDENT", ""]
+// NEWLINE:         ["NEWLINE", "\n"]
+//
+// AST format (tagged nested lists):
+//   ["program", Stmts]
+//   ["bind", Subject, Predicate, Value]    — predicate of subject := value
+//   ["unit", Name, Args]                   — fact predicate (no conditions)
+//   ["rule", Name, Args, Conditions]       — inference rule with conditions
+//   ["import", WildOrName, Source]         — import * from "path"
+//   ["query-bool", Name, Args]             — query: pred(args)?
+//   condition: ["call", Name, Args]
+//              ["not-call", Name, Args]
+//              ["cmp", Left, Op, Right]
+//   value:    string | number | ["var", Name] | ["id", Name]
+//             | ["path", N1, N2] | ["path-var", Var, Field]
+//             | ["duration", Amount, Unit]
+//
+// Entry point:
+//   parse-tokens(Tokens, AST)
+
+import * from "stdlib/lists"
+import * from "stdlib/strings"
+
+// ── Token utility predicates ──────────────────────────────────────────────────
+
+// tok-type(Type, Val, Tin, Tout) — consume one token of given type
+tok-type(Type, Val, Tokens, Rest) if:
+  list-cons([Type, Val], Rest, Tokens)
+
+// tok-kw(Kw, Tin, Tout) — consume a keyword token
+tok-kw(Kw, Tokens, Rest) if:
+  tok-type("KEYWORD", Kw, Tokens, Rest)
+
+// tok-ident(Name, Tin, Tout) — consume an identifier token
+tok-ident(Name, Tokens, Rest) if:
+  tok-type("IDENTIFIER", Name, Tokens, Rest)
+
+// tok-var(Name, Tin, Tout) — consume a variable token
+tok-var(Name, Tokens, Rest) if:
+  tok-type("VARIABLE", Name, Tokens, Rest)
+
+// tok-str(Val, Tin, Tout) — consume a string token
+tok-str(Val, Tokens, Rest) if:
+  tok-type("STRING", Val, Tokens, Rest)
+
+// tok-num(Val, Tin, Tout) — consume a number token
+tok-num(Val, Tokens, Rest) if:
+  tok-type("NUMBER", Val, Tokens, Rest)
+
+// tok-indent(Tin, Tout) — consume INDENT
+tok-indent(Tokens, Rest) if:
+  tok-type("INDENT", Av1, Tokens, Rest)
+
+// tok-dedent(Tin, Tout) — consume DEDENT
+tok-dedent(Tokens, Rest) if:
+  tok-type("DEDENT", Av1, Tokens, Rest)
+
+// tok-eof(Tin) — succeed if at end of tokens
+tok-eof(Tokens) if:
+  tok-type("EOF", Av1, Tokens, Av2)
+
+tok-eof(Tokens) if:
+  list-empty(Tokens)
+
+// tok-peek-type(Type, Tokens) — peek without consuming
+tok-peek-type(Type, Tokens) if:
+  list-cons([Type, Av1], Av2, Tokens)
+
+// tok-peek-val(Type, Val, Tokens) — peek type+value without consuming
+tok-peek-val(Type, Val, Tokens) if:
+  list-cons([Type, Val], Av1, Tokens)
+
+// ── Newline skipping ──────────────────────────────────────────────────────────
+
+skip-nl(Tokens, Tokens) if:
+  list-empty(Tokens)
+
+skip-nl(Tokens, After) if:
+  list-cons(["NEWLINE", Av1], Rest, Tokens)
+  skip-nl(Rest, After)
+
+skip-nl(Tokens, Tokens) if:
+  list-cons([H, Av1], Av2, Tokens)
+  not equal(H, "NEWLINE")
+
+skip-nl-or-dedent(Tokens, Tokens) if:
+  list-empty(Tokens)
+
+skip-nl-or-dedent(Tokens, After) if:
+  list-cons([H, Av1], Rest, Tokens)
+  equal(H, "NEWLINE")
+  skip-nl-or-dedent(Rest, After)
+
+skip-nl-or-dedent(Tokens, After) if:
+  list-cons([H, Av1], Rest, Tokens)
+  equal(H, "DEDENT")
+  skip-nl-or-dedent(Rest, After)
+
+skip-nl-or-dedent(Tokens, Tokens) if:
+  list-cons([H, Av1], Av2, Tokens)
+  not equal(H, "NEWLINE")
+  not equal(H, "DEDENT")
+
+// ── Value parsing ─────────────────────────────────────────────────────────────
+
+// String literal
+parse-val(Val, Tokens, Rest) if:
+  tok-str(Val, Tokens, Rest)
+
+// Number with duration unit
+parse-val(["duration", Num, Unit], Tokens, Rest) if:
+  tok-num(NumStr, Tokens, T1)
+  tok-peek-type("DURATION_UNIT", T1)
+  tok-type("DURATION_UNIT", Unit, T1, Rest)
+  str-to-number(NumStr, Num)
+
+// Plain number
+parse-val(Num, Tokens, Rest) if:
+  tok-num(NumStr, Tokens, Rest)
+  not tok-peek-type("DURATION_UNIT", Rest)
+  str-to-number(NumStr, Num)
+
+// Variable
+parse-val(["var", Name], Tokens, Rest) if:
+  tok-var(Name, Tokens, Rest)
+
+// "pred of subject" path — must check "of" keyword follows
+parse-val(["path", Subject, Pred], Tokens, Rest) if:
+  tok-ident(Pred, Tokens, T1)
+  tok-kw("of", T1, T2)
+  tok-ident(Subject, T2, Rest)
+
+// "ident.field" path
+parse-val(["path", Base, Field], Tokens, Rest) if:
+  tok-ident(Base, Tokens, T1)
+  tok-type("DOT", Av1, T1, T2)
+  tok-ident(Field, T2, Rest)
+
+// "Var.field" path with variable base
+parse-val(["path-var", Base, Field], Tokens, Rest) if:
+  tok-var(Base, Tokens, T1)
+  tok-type("DOT", Av1, T1, T2)
+  tok-ident(Field, T2, Rest)
+
+// Boolean true
+parse-val(true, Tokens, Rest) if:
+  tok-kw("true", Tokens, Rest)
+
+parse-val(true, Tokens, Rest) if:
+  tok-kw("True", Tokens, Rest)
+
+// Boolean false
+parse-val(false, Tokens, Rest) if:
+  tok-kw("false", Tokens, Rest)
+
+parse-val(false, Tokens, Rest) if:
+  tok-kw("False", Tokens, Rest)
+
+// Plain identifier — must NOT be followed by "of" or DOT
+parse-val(["id", Name], Tokens, Rest) if:
+  tok-ident(Name, Tokens, Rest)
+  not tok-peek-val("KEYWORD", "of", Rest)
+  not tok-peek-type("DOT", Rest)
+
+// ── Argument list parsing ─────────────────────────────────────────────────────
+
+parse-arg-list([], Tokens, Tokens) if:
+  tok-peek-type("RPAREN", Tokens)
+
+parse-arg-list(Args, Tokens, After) if:
+  not tok-peek-type("RPAREN", Tokens)
+  parse-val(Head, Tokens, T1)
+  parse-arg-list-rest(Tail, T1, After)
+  list-cons(Head, Tail, Args)
+
+parse-arg-list-rest([], Tokens, Tokens) if:
+  tok-peek-type("RPAREN", Tokens)
+
+parse-arg-list-rest(Args, Tokens, After) if:
+  not tok-peek-type("RPAREN", Tokens)
+  tok-type("COMMA", Av1, Tokens, T1)
+  parse-val(Head, T1, T2)
+  parse-arg-list-rest(Tail, T2, After)
+  list-cons(Head, Tail, Args)
+
+// parse-predicate-call(Name, Args, Tin, Tout)
+// Each tok-type call uses a distinct variable for the value
+parse-predicate-call(Name, Args, Tokens, After) if:
+  tok-ident(Name, Tokens, T1)
+  tok-type("LPAREN", Av1, T1, T2)
+  parse-arg-list(Args, T2, T3)
+  tok-type("RPAREN", Av2, T3, After)
+
+// ── Condition parsing ─────────────────────────────────────────────────────────
+
+comparison-op(Op, Tokens, Rest) if:
+  tok-type("OP_GEQ", Op, Tokens, Rest)
+
+comparison-op(Op, Tokens, Rest) if:
+  tok-type("OP_LEQ", Op, Tokens, Rest)
+
+comparison-op(Op, Tokens, Rest) if:
+  tok-type("OP_GT", Op, Tokens, Rest)
+
+comparison-op(Op, Tokens, Rest) if:
+  tok-type("OP_LT", Op, Tokens, Rest)
+
+comparison-op(Op, Tokens, Rest) if:
+  tok-type("OP_EQ", Op, Tokens, Rest)
+
+comparison-op(Op, Tokens, Rest) if:
+  tok-type("OP_NEQ", Op, Tokens, Rest)
+
+// Negated predicate: not pred(args)
+parse-condition(["not-call", Name, Args], Tokens, After) if:
+  tok-kw("not", Tokens, T1)
+  parse-predicate-call(Name, Args, T1, After)
+
+// Comparison: value op value
+parse-condition(["cmp", Left, Op, Right], Tokens, After) if:
+  parse-val(Left, Tokens, T1)
+  comparison-op(Op, T1, T2)
+  parse-val(Right, T2, After)
+
+// Regular predicate call
+parse-condition(["call", Name, Args], Tokens, After) if:
+  parse-predicate-call(Name, Args, Tokens, After)
+
+// ── Condition block (INDENT ... DEDENT) ───────────────────────────────────────
+
+parse-conditions(Conds, Tokens, After) if:
+  tok-indent(Tokens, T1)
+  parse-condition-lines(Conds, T1, T2)
+  tok-dedent(T2, After)
+
+// Base case: skip any trailing NEWLINEs, then stop at DEDENT
+parse-condition-lines([], Tokens, T1) if:
+  skip-nl(Tokens, T1)
+  tok-peek-type("DEDENT", T1)
+
+parse-condition-lines(Conds, Tokens, After) if:
+  not tok-peek-type("DEDENT", Tokens)
+  skip-nl(Tokens, T1)
+  not tok-peek-type("DEDENT", T1)
+  parse-condition(Cond, T1, T2)
+  skip-nl(T2, T3)
+  parse-condition-lines(Rest, T3, After)
+  list-cons(Cond, Rest, Conds)
+
+// ── Statement parsing ─────────────────────────────────────────────────────────
+
+// Type declaration: TypeName: ... (skip — not handled yet)
+parse-stmt(["skip-type-decl", Name], Tokens, After) if:
+  tok-type("VARIABLE", Name, Tokens, T1)
+  tok-type("COLON", Av1, T1, T2)
+  skip-nl(T2, T3)
+  tok-peek-type("INDENT", T3)
+  skip-indented-block(T3, T4)
+  skip-nl(T4, After)
+
+// import * from "source"
+parse-stmt(["import", "*", Source], Tokens, After) if:
+  tok-kw("import", Tokens, T1)
+  tok-type("OP_STAR", Av1, T1, T2)
+  tok-kw("from", T2, T3)
+  tok-str(Source, T3, T4)
+  skip-nl(T4, After)
+
+// import Name from "source"
+parse-stmt(["import", Name, Source], Tokens, After) if:
+  tok-kw("import", Tokens, T1)
+  not tok-peek-type("OP_STAR", T1)
+  tok-ident(Name, T1, T2)
+  tok-kw("from", T2, T3)
+  tok-str(Source, T3, T4)
+  skip-nl(T4, After)
+
+// Semantic binding: pred of subject := value
+parse-stmt(["bind", Subject, Pred, Val], Tokens, After) if:
+  tok-ident(Pred, Tokens, T1)
+  tok-kw("of", T1, T2)
+  tok-ident(Subject, T2, T3)
+  tok-type("ASSIGN", Av1, T3, T4)
+  parse-val(Val, T4, T5)
+  skip-stmt-tail(T5, After)
+
+// Semantic binding: subject.field := value
+parse-stmt(["bind", Subject, Field, Val], Tokens, After) if:
+  tok-ident(Subject, Tokens, T1)
+  tok-type("DOT", Av1, T1, T2)
+  tok-ident(Field, T2, T3)
+  tok-type("ASSIGN", Av2, T3, T4)
+  parse-val(Val, T4, T5)
+  skip-stmt-tail(T5, After)
+
+// Inference rule: name(args) if: conditions
+parse-stmt(["rule", Name, Args, Conds], Tokens, After) if:
+  tok-ident(Name, Tokens, T1)
+  tok-type("LPAREN", Av1, T1, T2)
+  parse-arg-list(Args, T2, T3)
+  tok-type("RPAREN", Av2, T3, T4)
+  tok-kw("if", T4, T5)
+  tok-type("COLON", Av3, T5, T6)
+  skip-nl(T6, T7)
+  parse-conditions(Conds, T7, T8)
+  skip-nl(T8, After)
+
+// Unit rule: name(args)  [no "if" follows]
+parse-stmt(["unit", Name, Args], Tokens, After) if:
+  tok-ident(Name, Tokens, T1)
+  tok-type("LPAREN", Av1, T1, T2)
+  parse-arg-list(Args, T2, T3)
+  tok-type("RPAREN", Av2, T3, T4)
+  not tok-peek-val("KEYWORD", "if", T4)
+  skip-nl(T4, After)
+
+// Bool query with colon: query: pred(args)?
+parse-stmt(["query-bool", Name, Args], Tokens, After) if:
+  tok-kw("query", Tokens, T1)
+  tok-type("COLON", Av1, T1, T2)
+  parse-predicate-call(Name, Args, T2, T3)
+  tok-type("QUESTION", Av2, T3, T4)
+  skip-nl(T4, After)
+
+// Bool query without colon: query pred(args)
+parse-stmt(["query-bool", Name, Args], Tokens, After) if:
+  tok-kw("query", Tokens, T1)
+  not tok-peek-type("COLON", T1)
+  parse-predicate-call(Name, Args, T1, T2)
+  skip-nl(T2, After)
+
+// Find query: find X where cond
+parse-stmt(["query-find", Vars, Conds], Tokens, After) if:
+  tok-kw("find", Tokens, T1)
+  parse-find-vars(Vars, T1, T2)
+  tok-kw("where", T2, T3)
+  parse-flat-conditions(Conds, T3, After)
+
+// Skip statement tail: optional annotation block after the value
+skip-stmt-tail(Tokens, After) if:
+  skip-nl(Tokens, T1)
+  tok-peek-type("INDENT", T1)
+  skip-indented-block(T1, After)
+
+skip-stmt-tail(Tokens, After) if:
+  skip-nl(Tokens, After)
+  not tok-peek-type("INDENT", After)
+
+skip-indented-block(Tokens, After) if:
+  tok-indent(Tokens, T1)
+  skip-until-dedent(T1, T2)
+  tok-dedent(T2, After)
+
+skip-until-dedent(Tokens, Tokens) if:
+  tok-peek-type("DEDENT", Tokens)
+
+skip-until-dedent(Tokens, After) if:
+  not tok-peek-type("DEDENT", Tokens)
+  list-cons(Av1, Rest, Tokens)
+  skip-until-dedent(Rest, After)
+
+// Find variable list
+parse-find-vars([VarName], Tokens, Rest) if:
+  tok-var(VarName, Tokens, T1)
+  not tok-peek-type("COMMA", T1)
+  equal(Rest, T1)
+
+parse-find-vars(Vars, Tokens, After) if:
+  tok-var(VarName, Tokens, T1)
+  tok-type("COMMA", Av1, T1, T2)
+  parse-find-vars(Rest, T2, After)
+  list-cons(VarName, Rest, Vars)
+
+// Flat conditions (comma-separated on one line)
+parse-flat-conditions([Cond], Tokens, After) if:
+  parse-condition(Cond, Tokens, T1)
+  not tok-peek-type("COMMA", T1)
+  skip-nl(T1, After)
+
+parse-flat-conditions(Conds, Tokens, After) if:
+  parse-condition(Cond, Tokens, T1)
+  tok-type("COMMA", Av1, T1, T2)
+  parse-flat-conditions(Rest, T2, After)
+  list-cons(Cond, Rest, Conds)
+
+// ── Program parsing ───────────────────────────────────────────────────────────
+
+parse-stmt-list([], Tokens, Tokens) if:
+  tok-eof(Tokens)
+
+parse-stmt-list([], Tokens, Tokens) if:
+  list-empty(Tokens)
+
+parse-stmt-list([], Tokens, Tokens) if:
+  not tok-eof(Tokens)
+  not list-empty(Tokens)
+  skip-nl(Tokens, T1)
+  tok-eof(T1)
+
+parse-stmt-list(Stmts, Tokens, After) if:
+  not tok-eof(Tokens)
+  not list-empty(Tokens)
+  skip-nl(Tokens, T1)
+  not tok-eof(T1)
+  parse-stmt(Stmt, T1, T2)
+  skip-nl(T2, T3)
+  parse-stmt-list(Rest, T3, After)
+  list-cons(Stmt, Rest, Stmts)
+
+// ── Public entry point ────────────────────────────────────────────────────────
+
+parse-tokens(Tokens, ["program", Stmts]) if:
+  parse-stmt-list(Stmts, Tokens, Av1)

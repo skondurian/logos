@@ -103,9 +103,12 @@ class Parser:
             if t.value == "import":
                 return self.parse_import()
 
-        # Inference rule: identifier "(" ... ")" "if"
+        # Inference rule: identifier "(" ... ")" "if" ... conditions
+        # Unit rule:      identifier "(" ... ")"         (no body = always true)
         if t.type == "IDENTIFIER" and self._is_rule_head():
             return self.parse_inference_rule()
+        if t.type == "IDENTIFIER" and self._is_unit_rule():
+            return self.parse_unit_rule()
 
         # Semantic binding: path ":="
         if self._is_binding_start():
@@ -326,7 +329,13 @@ class Parser:
 
     def parse_string(self) -> str:
         s = self.expect("STRING").value
-        return s[1:-1]  # strip quotes
+        inner = s[1:-1]  # strip outer quotes
+        # Unescape basic escape sequences
+        return (inner.replace("\\n", "\n")
+                     .replace("\\t", "\t")
+                     .replace("\\r", "\r")
+                     .replace('\\"', '"')
+                     .replace("\\\\", "\\"))
 
     def parse_set_lit(self) -> SetLit:
         self.expect("LBRACE")
@@ -377,6 +386,40 @@ class Parser:
             return self.peek().value == "if"
         finally:
             self.pos = saved
+
+    def _is_unit_rule(self) -> bool:
+        """Detect 'identifier(...)' NOT followed by 'if' — a unit rule (fact predicate).
+
+        Unit rules have no conditions; they are always true.  They provide a
+        predicate-style fact syntax:
+            can-fly(eagle)   // equivalent to an InferenceRule with empty conditions
+        """
+        saved = self.pos
+        try:
+            if self.peek().type != "IDENTIFIER":
+                return False
+            self.advance()  # identifier
+            if self.peek().type != "LPAREN":
+                return False
+            depth = 1
+            self.advance()
+            while depth > 0 and not self.at_eof():
+                t = self.advance()
+                if t.type == "LPAREN":
+                    depth += 1
+                elif t.type == "RPAREN":
+                    depth -= 1
+            # Must end at NEWLINE or EOF (not 'if')
+            nxt = self.peek()
+            return nxt.type in ("NEWLINE", "EOF")
+        finally:
+            self.pos = saved
+
+    def parse_unit_rule(self) -> InferenceRule:
+        """Parse a unit rule: identifier(args)  — no conditions."""
+        head = self.parse_predicate_call()
+        self.skip_newlines()
+        return InferenceRule(head=head, conditions=[])
 
     def parse_inference_rule(self) -> InferenceRule:
         head = self.parse_predicate_call()

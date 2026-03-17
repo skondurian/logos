@@ -1,0 +1,94 @@
+// logos/evaluator.logos — Logos evaluator in Logos (Phase F of self-hosting roadmap)
+//
+// Walks the AST produced by parser.logos and evaluates it:
+//   - Semantic bindings → assert-fact
+//   - Unit rules → register-rule-ast (fact predicates)
+//   - Inference rules → register-rule-ast
+//   - Bool queries → exec-bool-query-ast
+//   - Find queries → exec-find-query-ast
+//   - Import statements → (handled externally; skipped here)
+//
+// Entry point:
+//   eval-program(["program", Stmts])
+//
+// Each eval-stmt(Stmt) call evaluates one statement.
+
+import * from "stdlib/lists"
+
+// ── Value conversion ──────────────────────────────────────────────────────────
+//
+// eval-val(AstVal, RuntimeVal) — convert parser AST value to runtime value
+//
+// Strings and numbers pass through as-is.
+// ["id", Name] → Name (plain string identifier)
+// ["var", Name] → variable (passed through as-is for rule args)
+// ["duration", Amt, Unit] → handled by assert-fact (DurationLit created in Python)
+
+// Strings pass through (only actual strings)
+eval-val(V, V) if:
+  is-string(V)
+
+// Numbers pass through (only actual numbers)
+eval-val(V, V) if:
+  is-number(V)
+
+// Plain identifier
+eval-val(["id", Name], Name)
+
+// Variable (kept as-is for use in rule args)
+eval-val(["var", Name], ["var", Name])
+
+// Duration literal: passed through as a list for register-rule-ast to handle
+eval-val(["duration", Amt, Unit], ["duration", Amt, Unit])
+
+// Path variants: passed through for register-rule-ast
+eval-val(["path", S, P], ["path", S, P])
+eval-val(["path-var", V, F], ["path-var", V, F])
+
+// ── Statement evaluation ──────────────────────────────────────────────────────
+
+// eval-stmt(Stmt) — evaluate one AST statement
+
+// Semantic binding: ["bind", Subject, Predicate, Value]
+eval-stmt(["bind", Subject, Predicate, AstVal]) if:
+  eval-val(AstVal, RuntimeVal)
+  assert-fact(Subject, Predicate, RuntimeVal)
+
+// Unit rule (fact predicate): ["unit", Name, Args]
+eval-stmt(["unit", Name, Args]) if:
+  register-rule-ast(Name, Args, [])
+
+// Inference rule: ["rule", Name, Args, Conditions]
+eval-stmt(["rule", Name, Args, Conditions]) if:
+  register-rule-ast(Name, Args, Conditions)
+
+// Bool query: ["query-bool", Name, Args]
+eval-stmt(["query-bool", Name, Args]) if:
+  exec-bool-query-ast(Name, Args)
+
+// Find query: ["query-find", Vars, Conditions]
+eval-stmt(["query-find", Vars, Conditions]) if:
+  exec-find-query-ast(Vars, Conditions)
+
+// Import statement: skip (handled externally)
+eval-stmt(["import", AnyName, AnySource])
+
+// Type declaration: skip (not yet evaluated)
+eval-stmt(["skip-type-decl", AnyName])
+
+// ── Program evaluation ────────────────────────────────────────────────────────
+
+// eval-stmts(Stmts) — evaluate a list of statements
+eval-stmts([]) if:
+  true
+
+eval-stmts(Stmts) if:
+  list-cons(Stmt, Rest, Stmts)
+  eval-stmt(Stmt)
+  eval-stmts(Rest)
+
+// ── Public entry point ────────────────────────────────────────────────────────
+
+// eval-program(AST) — evaluate a full program AST
+eval-program(["program", Stmts]) if:
+  eval-stmts(Stmts)

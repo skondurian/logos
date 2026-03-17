@@ -18,7 +18,7 @@ from typing import Any, Iterator, Optional
 
 from logos.ast_nodes import (
     InferenceRule, PredicateCall, Comparison, NegatedPredicate,
-    Variable, Path, DurationLit, ArithExpr
+    Variable, Path, DurationLit, ArithExpr, ListLit, SetLit
 )
 from logos.confidence import ConfidenceValue, conjoin_all, DEFAULT_DEGRADATION
 from logos.semantic_graph import SemanticGraph, FactNode, QueryResult
@@ -38,6 +38,15 @@ _RULE_COUNTER = itertools.count()
 Bindings = dict[str, Any]   # variable name → value
 
 
+def _path_as_var(term: Any) -> Optional[str]:
+    """If term is a single-part uppercase Path (an unbound rule variable), return its name."""
+    if isinstance(term, Path) and len(term.parts) == 1:
+        p = term.parts[0]
+        if isinstance(p, str) and p and p[0].isupper():
+            return p
+    return None
+
+
 def unify_term(a: Any, b: Any, bindings: Bindings) -> Optional[Bindings]:
     """
     Attempt to unify term a with term b under current bindings.
@@ -52,6 +61,18 @@ def unify_term(a: Any, b: Any, bindings: Bindings) -> Optional[Bindings]:
         return {**bindings, a.name: b}
     if isinstance(b, Variable):
         return {**bindings, b.name: a}
+    # Single-part uppercase Path acts as a variable (rule variable representation)
+    av = _path_as_var(a)
+    if av is not None:
+        return {**bindings, av: b}
+    bv = _path_as_var(b)
+    if bv is not None:
+        return {**bindings, bv: a}
+    # Treat ListLit as a plain list for structural unification
+    if isinstance(a, ListLit):
+        a = a.elements
+    if isinstance(b, ListLit):
+        b = b.elements
     # Structural unification for lists/tuples
     if isinstance(a, (list, tuple)) and isinstance(b, (list, tuple)):
         if len(a) != len(b):
@@ -66,8 +87,17 @@ def unify_term(a: Any, b: Any, bindings: Bindings) -> Optional[Bindings]:
 
 def walk(term: Any, bindings: Bindings) -> Any:
     """Recursively chase variable bindings."""
-    while isinstance(term, Variable) and term.name in bindings:
-        term = bindings[term.name]
+    while True:
+        if isinstance(term, Variable) and term.name in bindings:
+            term = bindings[term.name]
+        elif isinstance(term, Path) and len(term.parts) == 1:
+            p = term.parts[0]
+            if isinstance(p, str) and p and p[0].isupper() and p in bindings:
+                term = bindings[p]
+            else:
+                break
+        else:
+            break
     return term
 
 
@@ -77,6 +107,12 @@ def apply_bindings(term: Any, bindings: Bindings) -> Any:
     if isinstance(term, Variable):
         return term  # unbound
     if isinstance(term, Path):
+        # Single-part uppercase Path used as a variable in rule conditions:
+        # if the part is in bindings, return the concrete value directly.
+        if len(term.parts) == 1:
+            p = term.parts[0]
+            if isinstance(p, str) and p and p[0].isupper() and p in bindings:
+                return apply_bindings(bindings[p], bindings)
         new_parts = []
         for p in term.parts:
             if isinstance(p, Variable):
@@ -93,6 +129,10 @@ def apply_bindings(term: Any, bindings: Bindings) -> Any:
             name=term.name,
             args=[apply_bindings(a, bindings) for a in term.args]
         )
+    if isinstance(term, ListLit):
+        return [apply_bindings(e, bindings) for e in term.elements]
+    if isinstance(term, SetLit):
+        return frozenset(apply_bindings(e, bindings) for e in term.elements)
     return term
 
 
@@ -133,10 +173,14 @@ class InferenceEngine:
     # ── Public interface ──────────────────────────────────────────────────────
 
     def prove(self, goal: Any, bindings: Optional[Bindings] = None,
-              depth: int = 0) -> Iterator[Proof]:
+              depth: int = 0,
+              _path: frozenset = frozenset()) -> Iterator[Proof]:
         """
         Yield all proofs of `goal` under `bindings`.
         May yield 0 proofs (failure) or multiple (non-determinism).
+
+        _path — frozenset of (predicate, args_str) tuples in the current
+                proof path; used for cycle detection.
         """
         if depth > self.max_depth:
             raise err.DepthLimitError(self.max_depth)
@@ -145,11 +189,11 @@ class InferenceEngine:
         goal = apply_bindings(goal, bindings)
 
         if isinstance(goal, Comparison):
-            yield from self._prove_comparison(goal, bindings, depth)
+            yield from self._prove_comparison(goal, bindings, depth, _path)
         elif isinstance(goal, NegatedPredicate):
-            yield from self._prove_negation(goal, bindings, depth)
+            yield from self._prove_negation(goal, bindings, depth, _path)
         elif isinstance(goal, PredicateCall):
-            yield from self._prove_predicate(goal, bindings, depth)
+            yield from self._prove_predicate(goal, bindings, depth, _path)
         else:
             # Bare path — evaluate as a lookup
             yield from self._prove_path_lookup(goal, bindings, depth)
@@ -162,17 +206,20 @@ class InferenceEngine:
 
     def prove_all(self, goals: list[Any],
                   bindings: Optional[Bindings] = None,
-                  depth: int = 0) -> Iterator[Proof]:
+                  depth: int = 0,
+                  _path: frozenset = frozenset()) -> Iterator[Proof]:
         """
         Prove a conjunction of goals, threading bindings and confidence.
         """
-        yield from self._prove_conjunction(goals, bindings or {}, depth, [])
+        yield from self._prove_conjunction(goals, bindings or {}, depth, [],
+                                           _path)
 
     # ── Internal ──────────────────────────────────────────────────────────────
 
     def _prove_conjunction(
         self, goals: list[Any], bindings: Bindings, depth: int,
-        confidences: list[ConfidenceValue]
+        confidences: list[ConfidenceValue],
+        _path: frozenset = frozenset(),
     ) -> Iterator[Proof]:
         if not goals:
             yield Proof(
@@ -183,21 +230,30 @@ class InferenceEngine:
             )
             return
         head, *rest = goals
-        for sub_proof in self.prove(head, bindings, depth):
+        for sub_proof in self.prove(head, bindings, depth, _path):
             if sub_proof.success:
                 yield from self._prove_conjunction(
                     rest,
                     {**bindings, **sub_proof.bindings},
                     depth,
                     confidences + [sub_proof.confidence],
+                    _path,
                 )
 
     def _prove_predicate(self, goal: PredicateCall, bindings: Bindings,
-                         depth: int) -> Iterator[Proof]:
+                         depth: int,
+                         _path: frozenset = frozenset()) -> Iterator[Proof]:
+        # 0. Try primitive registry (Python-backed predicates)
+        from logos import primitives
+        if goal.name in primitives.REGISTRY:
+            args = [apply_bindings(a, bindings) for a in goal.args]
+            yield from primitives.REGISTRY[goal.name](args, bindings, self)
+            # Primitives do NOT fall through to SLD — they are the definition.
+            return
         # 1. Try matching against facts in the semantic graph
         yield from self._prove_from_facts(goal, bindings)
-        # 2. Try matching against inference rules
-        yield from self._prove_from_rules(goal, bindings, depth)
+        # 2. Try matching against inference rules (with cycle detection)
+        yield from self._prove_from_rules(goal, bindings, depth, _path)
 
     def _fact_visible(self, fact: FactNode) -> bool:
         """
@@ -281,7 +337,15 @@ class InferenceEngine:
                         )
 
     def _prove_from_rules(self, goal: PredicateCall, bindings: Bindings,
-                          depth: int) -> Iterator[Proof]:
+                          depth: int,
+                          _path: frozenset = frozenset()) -> Iterator[Proof]:
+        # Cycle detection: build a signature from the goal name + ground args
+        resolved_args = [apply_bindings(a, bindings) for a in goal.args]
+        sig = (goal.name, tuple(_term_to_str(a) for a in resolved_args))
+        if sig in _path:
+            raise err.CycleDetectedError([goal.name])
+        new_path = _path | {sig}
+
         for rule in self.rules:
             if rule.head.name != goal.name:
                 continue
@@ -299,7 +363,7 @@ class InferenceEngine:
             else:
                 # Prove all conditions
                 for conj_proof in self._prove_conjunction(
-                    rule.conditions, new_b, depth + 1, []
+                    rule.conditions, new_b, depth + 1, [], new_path
                 ):
                     degraded = conj_proof.confidence.degrade(self.degradation)
                     yield Proof(
@@ -310,7 +374,8 @@ class InferenceEngine:
                     )
 
     def _prove_comparison(self, goal: Comparison, bindings: Bindings,
-                          depth: int) -> Iterator[Proof]:
+                          depth: int,
+                          _path: frozenset = frozenset()) -> Iterator[Proof]:
         left = apply_bindings(goal.left, bindings)
         right = apply_bindings(goal.right, bindings)
 
@@ -358,9 +423,10 @@ class InferenceEngine:
             yield Proof(success=True, bindings=bindings, confidence=conf)
 
     def _prove_negation(self, goal: NegatedPredicate, bindings: Bindings,
-                        depth: int) -> Iterator[Proof]:
+                        depth: int,
+                        _path: frozenset = frozenset()) -> Iterator[Proof]:
         """Negation-as-failure: succeed if the inner predicate has no proof."""
-        proofs = list(self.prove(goal.predicate, bindings, depth))
+        proofs = list(self.prove(goal.predicate, bindings, depth, _path))
         if not proofs:
             yield Proof(success=True, bindings=bindings,
                         confidence=ConfidenceValue.absolute())
@@ -393,7 +459,16 @@ class InferenceEngine:
                         return best.value, best.confidence
                 return None, ConfidenceValue.impossible()
             elif len(term.parts) == 1:
-                return term.parts[0], ConfidenceValue.absolute()
+                val = term.parts[0]
+                # Recover numeric type lost during path substitution:
+                # apply_bindings converts numeric values to strings via str(),
+                # so "5.0" here might represent the float 5.0.
+                if isinstance(val, str):
+                    try:
+                        return float(val), ConfidenceValue.absolute()
+                    except (ValueError, TypeError):
+                        pass
+                return val, ConfidenceValue.absolute()
             return None, ConfidenceValue.impossible()
         if isinstance(term, Variable):
             val = bindings.get(term.name)
@@ -461,6 +536,12 @@ def _rename_vars(rule: InferenceRule, depth: int) -> InferenceRule:
                               right=rename(term.right))
         if isinstance(term, NegatedPredicate):
             return NegatedPredicate(predicate=rename(term.predicate))
+        if isinstance(term, ListLit):
+            return ListLit(elements=[rename(e) for e in term.elements])
+        if isinstance(term, SetLit):
+            return SetLit(elements=[rename(e) for e in term.elements])
+        if isinstance(term, list):
+            return [rename(e) for e in term]
         return term
 
     new_head = PredicateCall(

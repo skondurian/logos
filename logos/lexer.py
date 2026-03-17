@@ -55,7 +55,7 @@ DURATION_UNITS = {
 TOKEN_PATTERNS: list[tuple[str, str]] = [
     ("COMMENT",    r"//[^\n]*"),
     ("NUMBER",     r"-?[0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?"),
-    ("STRING",     r'"[^"\\]*"'),
+    ("STRING",     r'"(?:[^"\\]|\\.)*"'),
     ("ARROW",      r"→|->"),
     ("ASSIGN",     r":="),
     # Multi-char operators MUST come before single-char ones

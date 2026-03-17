@@ -258,6 +258,8 @@ def main():
     sub.add_parser("repl", help="Start interactive REPL")
     run_cmd = sub.add_parser("run", help="Run a .logos file")
     run_cmd.add_argument("file", help="Path to .logos file")
+    interp_cmd = sub.add_parser("interpret", help="Run a .logos file via interpreter.logos (self-hosting)")
+    interp_cmd.add_argument("file", help="Path to .logos file to interpret")
     args = ap.parse_args()
 
     if args.command == "repl" or args.command is None:
@@ -271,3 +273,18 @@ def main():
         console.print(f"[dim]Loaded {args.file} — {len(executor.graph)} active facts[/dim]")
         for out in outputs:
             render_query_output(console, out)
+    elif args.command == "interpret":
+        import os
+        from logos.executor import Executor
+        from logos.ast_nodes import PredicateCall
+        logos_dir = os.path.join(os.path.dirname(__file__))
+        ex = Executor()
+        ex.load_file(os.path.join(logos_dir, "parser.logos"))
+        ex.load_file(os.path.join(logos_dir, "evaluator.logos"))
+        ex.load_file(os.path.join(logos_dir, "interpreter.logos"))
+        target = os.path.abspath(args.file)
+        goal = PredicateCall(name="interpret", args=[target])
+        results = list(ex.engine.prove_all([goal]))
+        if not any(r.success for r in results):
+            print(f"interpret({args.file}): failed", file=sys.stderr)
+            sys.exit(1)

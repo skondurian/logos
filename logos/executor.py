@@ -12,6 +12,9 @@ The Executor is the main entry point for running Logos programs. It holds:
 from __future__ import annotations
 import os
 import warnings
+
+# Stdlib directory ships alongside the logos package
+_STDLIB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "stdlib")
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
@@ -54,7 +57,11 @@ class Executor:
         self.context_registry = ContextRegistry()
         self.rules: list[InferenceRule] = []
         self.transforms: dict[str, TransformDecl] = {}
-        self.search_path: list[str] = search_path or ["."]
+        # Always include the stdlib directory so `import stdlib/lists` works
+        base_path = search_path if search_path is not None else ["."]
+        self.search_path: list[str] = base_path + [
+            os.path.dirname(os.path.abspath(__file__))
+        ]
         self._engine: Optional[InferenceEngine] = None
         self._loaded_files: set[str] = set()
 

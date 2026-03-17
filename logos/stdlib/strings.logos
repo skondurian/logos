@@ -1,0 +1,50 @@
+// stdlib/strings.logos — Standard string utilities
+// Built on str-* and char-* native primitives (Phase B).
+
+// ── String classification ───────────────────────────────────────────────────
+
+// str-empty(S) — S is the empty string
+str-empty(S) if:
+  equal(S, "")
+
+// str-non-empty(S) — S is a non-empty string
+str-non-empty(S) if:
+  not str-empty(S)
+
+// str-numeric(S) — S can be parsed as a number
+str-numeric(S) if:
+  str-to-number(S, N)
+
+// ── String building ─────────────────────────────────────────────────────────
+
+// str-concat3(A, B, C, Result) — Result = A ++ B ++ C
+str-concat3(A, B, C, Result) if:
+  str-concat(A, B, AB)
+  str-concat(AB, C, Result)
+
+// str-concat4(A, B, C, D, Result) — Result = A ++ B ++ C ++ D
+str-concat4(A, B, C, D, Result) if:
+  str-concat(A, B, AB)
+  str-concat(AB, C, ABC)
+  str-concat(ABC, D, Result)
+
+// ── String predicates ───────────────────────────────────────────────────────
+
+// str-prefix(Prefix, Str) — Str starts with Prefix (alias)
+str-prefix(Prefix, Str) if:
+  str-starts-with(Str, Prefix)
+
+// str-suffix(Suffix, Str) — Str ends with Suffix (alias)
+str-suffix(Suffix, Str) if:
+  str-ends-with(Str, Suffix)
+
+// ── Character iteration ─────────────────────────────────────────────────────
+
+// str-chars(Str, Chars) — Chars is the list of characters in Str
+str-chars(Str, Chars) if:
+  str-split(Str, "", Chars)
+
+// str-char-member(C, Str) — C is a character in Str
+str-char-member(C, Str) if:
+  str-chars(Str, Chars)
+  list-member(C, Chars)

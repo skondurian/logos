@@ -1,0 +1,54 @@
+// stdlib/math.logos — Arithmetic helpers
+// Built on num-* native primitives (Phase B).
+
+// ── Basic predicates ────────────────────────────────────────────────────────
+
+// positive(X) — X > 0
+positive(X) if:
+  X > 0
+
+// negative(X) — X < 0
+negative(X) if:
+  X < 0
+
+// non-negative(X) — X >= 0
+non-negative(X) if:
+  X >= 0
+
+// zero(X) — X = 0
+zero(X) if:
+  equal(X, 0.0)
+
+// even(X) — X is even (integer)
+even(X) if:
+  num-mod(X, 2.0, R)
+  equal(R, 0.0)
+
+// odd(X) — X is odd (integer)
+odd(X) if:
+  num-mod(X, 2.0, R)
+  equal(R, 1.0)
+
+// ── Arithmetic relations ────────────────────────────────────────────────────
+
+// between(Lo, Hi, X) — Lo <= X <= Hi
+between(Lo, Hi, X) if:
+  X >= Lo
+  X <= Hi
+
+// clamp(X, Lo, Hi, Result) — Result = max(Lo, min(Hi, X))
+clamp(X, Lo, Hi, Result) if:
+  num-max(X, Lo, Low)
+  num-min(Low, Hi, Result)
+
+// square(X, Y) — Y = X * X
+square(X, Y) if:
+  num-mul(X, X, Y)
+
+// increment(X, Y) — Y = X + 1
+increment(X, Y) if:
+  num-add(X, 1.0, Y)
+
+// decrement(X, Y) — Y = X - 1
+decrement(X, Y) if:
+  num-sub(X, 1.0, Y)
