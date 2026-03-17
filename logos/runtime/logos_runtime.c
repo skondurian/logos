@@ -6,7 +6,7 @@
 
 /* ── String interning ───────────────────────────────────────────────────────── */
 
-#define INTERN_SLOTS 1024
+#define INTERN_SLOTS 16384   /* power-of-2 for fast modulo */
 static const char *_intern_table[INTERN_SLOTS];
 
 const char *logos_intern(const char *s) {
@@ -20,7 +20,7 @@ const char *logos_intern(const char *s) {
 
     /* linear probe */
     for (i = 0; i < INTERN_SLOTS; i++) {
-        idx = (int)((h + (unsigned)i) % INTERN_SLOTS);
+        idx = (int)((h + (unsigned)i) & (INTERN_SLOTS - 1));
         if (_intern_table[idx] == NULL) {
             copy = (char *)malloc(strlen(s) + 1);
             if (!copy) return s;
@@ -31,14 +31,57 @@ const char *logos_intern(const char *s) {
         if (strcmp(_intern_table[idx], s) == 0)
             return _intern_table[idx];
     }
-    /* table full — fall back to heap string (no dedup) */
+    /* table full — fall back to undeduped heap string */
     copy = (char *)malloc(strlen(s) + 1);
     if (!copy) return s;
     strcpy(copy, s);
     return copy;
 }
 
-/* ── Term constructors ──────────────────────────────────────────────────────── */
+/* ── Global cons pool ───────────────────────────────────────────────────────── */
+
+static logos_cons _cons_pool[LOGOS_MAX_CONS];
+static int        _cons_pool_top = 0;
+
+logos_cons *logos_alloc_cons(void) {
+    if (_cons_pool_top >= LOGOS_MAX_CONS) {
+        fprintf(stderr, "logos: cons pool overflow (limit %d)\n", LOGOS_MAX_CONS);
+        exit(1);
+    }
+    return &_cons_pool[_cons_pool_top++];
+}
+
+/* ── List constructors ──────────────────────────────────────────────────────── */
+
+logos_term logos_nil(void) {
+    logos_term t;
+    t.tag = LOGOS_NIL;
+    t.i   = 0;
+    return t;
+}
+
+logos_term logos_list_cons(logos_term head, logos_term tail) {
+    logos_cons *cell = logos_alloc_cons();
+    logos_term  t;
+    cell->head = head;
+    cell->tail = tail;
+    t.tag  = LOGOS_LIST;
+    t.cons = cell;
+    return t;
+}
+
+logos_term logos_list_from_array(logos_term *terms, int n) {
+    logos_term result = logos_nil();
+    int i;
+    for (i = n - 1; i >= 0; i--)
+        result = logos_list_cons(terms[i], result);
+    return result;
+}
+
+int logos_is_nil(logos_term t)  { return t.tag == LOGOS_NIL;  }
+int logos_is_list(logos_term t) { return t.tag == LOGOS_LIST; }
+
+/* ── Scalar term constructors ───────────────────────────────────────────────── */
 
 logos_term logos_int(long i) {
     logos_term t;
@@ -110,6 +153,7 @@ void logos_undo(logos_env *env, logos_mark_t mark) {
 /* ── Unification ────────────────────────────────────────────────────────────── */
 
 int logos_unify(logos_env *env, logos_term a, logos_term b) {
+    logos_mark_t m;
     a = logos_walk(env, a);
     b = logos_walk(env, b);
 
@@ -135,7 +179,20 @@ int logos_unify(logos_env *env, logos_term a, logos_term b) {
         case LOGOS_BOOL:     return a.i == b.i;
         case LOGOS_DURATION: return a.f == b.f;
         case LOGOS_NONE:     return 1;
-        default:             return 0;
+        case LOGOS_NIL:      return 1;            /* nil = nil */
+        case LOGOS_LIST:
+            /* Structural unification; take a mark so partial success is undone */
+            m = logos_mark(env);
+            if (!logos_unify(env, a.cons->head, b.cons->head)) {
+                logos_undo(env, m);
+                return 0;
+            }
+            if (!logos_unify(env, a.cons->tail, b.cons->tail)) {
+                logos_undo(env, m);
+                return 0;
+            }
+            return 1;
+        default: return 0;
     }
 }
 
@@ -145,10 +202,10 @@ void logos_graph_assert(logos_graph *g, const char *subj, const char *pred,
                         logos_term val, double conf) {
     logos_fact *f;
     if (g->count >= LOGOS_MAX_FACTS) return;
-    f            = &g->facts[g->count++];
-    f->subject   = logos_intern(subj);
-    f->predicate = logos_intern(pred);
-    f->value     = val;
+    f             = &g->facts[g->count++];
+    f->subject    = logos_intern(subj);
+    f->predicate  = logos_intern(pred);
+    f->value      = val;
     f->confidence = conf;
 }
 
@@ -213,8 +270,8 @@ int logos_compare(logos_term l, int op, logos_term r) {
     /* String comparison */
     if (l.tag == LOGOS_STRING && r.tag == LOGOS_STRING) {
         switch (op) {
-            case 4: return l.s == r.s;          /* = */
-            case 5: return l.s != r.s;          /* != */
+            case 4: return l.s == r.s;
+            case 5: return l.s != r.s;
             default: return 0;
         }
     }
@@ -253,7 +310,7 @@ int k_bool_capture(logos_env *env) {
         *conf  = logos_disjoin(*conf, env->confidence);
         *found = 1;
     }
-    return 0;   /* 0 = "continue exploring" — all proof paths are tried */
+    return 0;
 }
 
 int k_naf_capture(logos_env *env) {
@@ -266,15 +323,34 @@ int k_naf_capture(logos_env *env) {
 
 /* ── Output ─────────────────────────────────────────────────────────────────── */
 
-static void _print_term(logos_term t) {
+void logos_print_term(logos_term t) {
+    logos_term cur;
+    int first;
     switch (t.tag) {
-        case LOGOS_INT:      printf("%ld", t.i);                  break;
-        case LOGOS_FLOAT:    printf("%g",  t.f);                  break;
-        case LOGOS_STRING:   printf("%s",  t.s);                  break;
-        case LOGOS_BOOL:     printf("%s",  t.i ? "true":"false"); break;
-        case LOGOS_DURATION: printf("%.6g secs", t.f);            break;
-        case LOGOS_NONE:     printf("_");                          break;
-        default:             printf("?");                          break;
+        case LOGOS_INT:      printf("%ld",  t.i);                  break;
+        case LOGOS_FLOAT:    printf("%g",   t.f);                  break;
+        case LOGOS_STRING:   printf("%s",   t.s);                  break;
+        case LOGOS_BOOL:     printf("%s",   t.i ? "true":"false"); break;
+        case LOGOS_DURATION: printf("%.6g secs", t.f);             break;
+        case LOGOS_NONE:     printf("_");                           break;
+        case LOGOS_NIL:      printf("[]");                          break;
+        case LOGOS_LIST:
+            printf("[");
+            cur   = t;
+            first = 1;
+            while (cur.tag == LOGOS_LIST) {
+                if (!first) printf(", ");
+                logos_print_term(cur.cons->head);
+                cur   = cur.cons->tail;
+                first = 0;
+            }
+            if (cur.tag != LOGOS_NIL) {
+                printf(" | ");
+                logos_print_term(cur);
+            }
+            printf("]");
+            break;
+        default: printf("?"); break;
     }
 }
 
@@ -290,7 +366,7 @@ void logos_print_find_row(const char **var_names, logos_term *vals,
     for (i = 0; i < n_vars; i++) {
         if (i > 0) printf(", ");
         printf("%s=", var_names[i]);
-        _print_term(vals[i]);
+        logos_print_term(vals[i]);
     }
     printf("  [confidence: %.3f]\n", conf);
 }

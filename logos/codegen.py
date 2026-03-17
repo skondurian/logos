@@ -46,12 +46,12 @@ class Compiler:
     """Transforms a Program AST into a C source string."""
 
     def __init__(self, program: Program):
-        self.program = program
-        self.facts:   list[SemanticBinding] = []
-        self.rules:   list[InferenceRule]   = []
-        self.queries: list[Any]              = []
-        # pred_name → list of (clause_index, InferenceRule) in order
+        self.program    = program
+        self.facts:     list[SemanticBinding]                           = []
+        self.rules:     list[InferenceRule]                             = []
+        self.queries:   list[Any]                                       = []
         self.rules_by_pred: dict[str, list[tuple[int, InferenceRule]]] = {}
+        self._tmp_ctr   = 0   # counter for unique temp-var names in setup
 
         for stmt in program.statements:
             if isinstance(stmt, SemanticBinding):
@@ -69,24 +69,20 @@ class Compiler:
             elif isinstance(stmt, TypeDecl):
                 pass  # silently skipped
             elif isinstance(stmt, ImportStmt):
-                raise CompilationError(
-                    "import statements are not supported in compiled mode"
-                )
+                pass  # resolved by compiler.resolve_imports() before we run
             # Retraction / TransformDecl / ContextDecl silently skipped
 
     # ── Validation ────────────────────────────────────────────────────────────
 
     def _check_binding(self, b: SemanticBinding) -> None:
         val = b.value
-        if isinstance(val, (SetLit, ListLit)):
+        if isinstance(val, SetLit):
             raise CompilationError(
-                f"SetLit/ListLit fact values are not supported in compiled mode"
-                f" (at {b.path})"
+                f"SetLit fact values are not supported in compiled mode (at {b.path})"
             )
         if isinstance(val, ArithExpr):
             raise CompilationError(
-                f"ArithExpr fact values are not supported in compiled mode"
-                f" (at {b.path})"
+                f"ArithExpr fact values are not supported in compiled mode (at {b.path})"
             )
 
     # ── Top-level generation ──────────────────────────────────────────────────
@@ -118,7 +114,7 @@ class Compiler:
         lines = ["/* Forward declarations */"]
         for pred, clauses in self.rules_by_pred.items():
             first_rule = clauses[0][1]
-            param_str = self._pred_param_decl(first_rule)
+            param_str  = self._pred_param_decl(first_rule)
             lines.append(
                 f"static int rule_{_c_id(pred)}_0"
                 f"(logos_env *env, {param_str}, logos_cont k);"
@@ -131,21 +127,18 @@ class Compiler:
         return "\n".join(lines)
 
     def _pred_param_decl(self, rule: InferenceRule) -> str:
-        """C parameter declarations for the rule's head arguments."""
         parts = []
         for arg in rule.head.args:
             parts.append(f"logos_term var_{self._head_arg_cname(arg)}")
         return ", ".join(parts)
 
     def _pred_param_pass(self, rule: InferenceRule) -> str:
-        """C argument list passing the head vars through."""
         parts = []
         for arg in rule.head.args:
             parts.append(f"var_{self._head_arg_cname(arg)}")
         return ", ".join(parts)
 
     def _head_arg_cname(self, arg: Any) -> str:
-        """C name fragment for a rule-head argument (Variable or Path)."""
         if isinstance(arg, Variable):
             return _c_id(arg.name)
         elif isinstance(arg, Path):
@@ -194,8 +187,10 @@ class Compiler:
         lines = ["void logos_setup(logos_graph *g) {"]
         for b in self.facts:
             subj, pred = self._decompose_path(b.path)
-            val_expr   = self._emit_value(b.value)
             conf       = self._get_confidence(b)
+            setup: list[str] = []
+            val_expr   = self._emit_value_stmts(b.value, setup, indent="    ")
+            lines.extend(setup)
             lines.append(
                 f'    logos_graph_assert(g, "{_esc(subj)}", '
                 f'"{_esc(pred)}", {val_expr}, {conf});'
@@ -209,7 +204,41 @@ class Compiler:
             return (path.parts[0], "value")
         return (path.parts[0], path.parts[1])
 
+    # ── Value emission (possibly multi-statement for lists) ───────────────────
+
+    def _tmp_fresh(self, prefix: str = "_sv") -> str:
+        self._tmp_ctr += 1
+        return f"{prefix}_{self._tmp_ctr}"
+
+    def _emit_value_stmts(self, value: Any, setup: list[str],
+                          indent: str = "    ") -> str:
+        """Emit value construction statements into *setup*, return C expression.
+
+        For scalar values (string, int, duration …) setup remains empty and
+        the returned string is an inline C expression.  For ListLit, one or
+        more `logos_term _sv_N = …;` statements are appended to setup and the
+        returned string is the last temp-variable name.
+        """
+        if isinstance(value, ListLit):
+            return self._emit_list_stmts(value, setup, indent)
+        else:
+            return self._emit_value(value)
+
+    def _emit_list_stmts(self, lst: ListLit, setup: list[str],
+                         indent: str = "    ") -> str:
+        """Emit a list construction as sequential statements; return final var."""
+        if not lst.elements:
+            return "logos_nil()"
+        cur = "logos_nil()"
+        for elt in reversed(lst.elements):
+            elt_expr = self._emit_value_stmts(elt, setup, indent)
+            tmp = self._tmp_fresh("_sv")
+            setup.append(f"{indent}logos_term {tmp} = logos_list_cons({elt_expr}, {cur});")
+            cur = tmp
+        return cur
+
     def _emit_value(self, value: Any) -> str:
+        """Return an inline C expression for a scalar value."""
         if isinstance(value, DurationLit):
             return f"logos_duration({value.to_seconds()})"
         elif isinstance(value, bool):
@@ -220,8 +249,14 @@ class Compiler:
             return f"logos_float({value})"
         elif isinstance(value, str):
             return f'logos_string("{_esc(value)}")'
-        elif isinstance(value, (SetLit, ListLit)):
-            raise CompilationError("SetLit/ListLit not supported in compiled mode")
+        elif isinstance(value, ListLit):
+            # Caller should use _emit_value_stmts; this path is a fallback for
+            # contexts where setup statements aren't available (e.g. query args)
+            raise CompilationError(
+                "ListLit in expression context requires _emit_value_stmts"
+            )
+        elif isinstance(value, SetLit):
+            raise CompilationError("SetLit not supported in compiled mode")
         elif isinstance(value, ArithExpr):
             raise CompilationError("ArithExpr not supported in compiled mode")
         else:
@@ -280,7 +315,6 @@ class Compiler:
         ]
 
     def _query_term(self, arg: Any) -> str:
-        """C expression for a query argument (always concrete)."""
         if isinstance(arg, Path) and len(arg.parts) == 1:
             return f'logos_string("{_esc(arg.parts[0])}")'
         elif isinstance(arg, str):
@@ -297,7 +331,6 @@ class Compiler:
             return f'logos_string("{_esc(str(arg))}")'
 
     def _query_text_arg(self, arg: Any) -> str:
-        """Human-readable text for a query argument (for the printed label)."""
         if isinstance(arg, Path):
             return str(arg)
         elif isinstance(arg, Variable):
@@ -308,14 +341,7 @@ class Compiler:
     # ── FindQuery emission ────────────────────────────────────────────────────
 
     def _emit_find_query(self, q: FindQuery) -> list[str]:
-        """
-        Enumerate all unique subjects in the graph and test the predicate
-        condition for each.  Handles single and multi-variable find queries
-        where variables map 1-to-1 with predicate arguments.
-        """
-        var_names = [v.name for v in q.variables]
-
-        # Collect the primary predicate call condition
+        var_names  = [v.name for v in q.variables]
         pred_conds = [c for c in q.conditions if isinstance(c, PredicateCall)]
         if not pred_conds:
             return [
@@ -328,18 +354,14 @@ class Compiler:
         cname = _c_id(pc.name)
         nv    = len(var_names)
 
-        # Build per-subject argument expression (replace query vars with _s)
         def arg_expr(a: Any) -> str:
             if isinstance(a, Variable) and a.name in var_names:
                 return "logos_string(_s)"
             return self._query_term(a)
 
-        arg_exprs = ", ".join(arg_expr(a) for a in pc.args)
-
-        # C array of variable name strings
+        arg_exprs  = ", ".join(arg_expr(a) for a in pc.args)
         vnames_lit = "{" + ", ".join(f'"{n}"' for n in var_names) + "}"
 
-        # C array of result term values (variable positions filled by _s)
         def val_expr(v: Variable) -> str:
             for a in pc.args:
                 if isinstance(a, Variable) and a.name == v.name:
@@ -348,7 +370,7 @@ class Compiler:
 
         vals_lit = "{" + ", ".join(val_expr(v) for v in q.variables) + "}"
 
-        lines = [
+        return [
             "    {",
             f"        /* find {', '.join(var_names)} where {pc.name}(...) */",
             "        const char *_seen[LOGOS_MAX_FACTS];",
@@ -377,7 +399,6 @@ class Compiler:
             "        }",
             "    }",
         ]
-        return lines
 
 
 # ── RuleEmitter ───────────────────────────────────────────────────────────────
@@ -393,7 +414,6 @@ class RuleEmitter:
         self.compiler  = compiler
         self._ctr      = 0
 
-        # Map from Logos variable name → C variable expression
         self._var_map: dict[str, str] = {}
         for arg in rule.head.args:
             if isinstance(arg, Variable):
@@ -442,8 +462,8 @@ class RuleEmitter:
     # ── Comparison condition ──────────────────────────────────────────────────
 
     def _emit_comparison(self, cond: Comparison, idx: int) -> list[str]:
-        left = cond.left
-        op   = cond.op
+        left  = cond.left
+        op    = cond.op
         right = cond.right
 
         if not (isinstance(left, Path) and len(left.parts) == 2):
@@ -456,11 +476,16 @@ class RuleEmitter:
         pred_part = left.parts[1]
         c_subj    = self._resolve_var(subj_part)
         op_num    = _OP_MAP.get(op, 4)
-        rhs_expr  = self._resolve_term(right)
 
-        return [
+        setup: list[str] = []
+        rhs_expr = self._emit_term(right, setup)
+
+        lines = [
             f"    /* {left} {op} {right} */",
             f"    {{",
+        ]
+        lines.extend(setup)
+        lines += [
             f"        logos_term _val_{idx}; double _conf_{idx};",
             f"        if (!logos_graph_lookup(env->graph,",
             f'                logos_walk(env, {c_subj}).s, "{_esc(pred_part)}",',
@@ -470,15 +495,21 @@ class RuleEmitter:
             f"        env->confidence = logos_conjoin(env->confidence, _conf_{idx});",
             f"    }}",
         ]
+        return lines
 
     # ── Predicate call condition ──────────────────────────────────────────────
 
     def _emit_pred_call_cond(self, cond: PredicateCall, idx: int) -> list[str]:
-        cname     = _c_id(cond.name)
-        arg_exprs = ", ".join(self._resolve_term(a) for a in cond.args)
-        return [
+        cname = _c_id(cond.name)
+        setup: list[str] = []
+        arg_exprs = ", ".join(self._emit_term(a, setup) for a in cond.args)
+
+        lines = [
             f"    /* condition: {cond.name}(...) */",
             f"    {{",
+        ]
+        lines.extend(setup)
+        lines += [
             f"        int    _pc_found_{idx} = 0;",
             f"        double _pc_conf_{idx}  = 0.0;",
             f"        void *_pf_{idx} = env->capture_found;",
@@ -494,16 +525,22 @@ class RuleEmitter:
             f"        env->confidence = logos_conjoin(env->confidence, _pc_conf_{idx});",
             f"    }}",
         ]
+        return lines
 
     # ── Negation-as-failure ───────────────────────────────────────────────────
 
     def _emit_negation(self, cond: NegatedPredicate, idx: int) -> list[str]:
-        pc        = cond.predicate
-        cname     = _c_id(pc.name)
-        arg_exprs = ", ".join(self._resolve_term(a) for a in pc.args)
-        return [
+        pc    = cond.predicate
+        cname = _c_id(pc.name)
+        setup: list[str] = []
+        arg_exprs = ", ".join(self._emit_term(a, setup) for a in pc.args)
+
+        lines = [
             f"    /* not {pc.name}(...) — negation-as-failure */",
             f"    {{",
+        ]
+        lines.extend(setup)
+        lines += [
             f"        int    _naf_found_{idx} = 0;",
             f"        double _naf_conf_{idx}  = 0.0;",
             f"        void *_pf_{idx} = env->capture_found;",
@@ -518,31 +555,52 @@ class RuleEmitter:
             f"        if (_naf_found_{idx}) return 0;  /* NAF: fail if proved */",
             f"    }}",
         ]
+        return lines
 
-    # ── Term resolution ───────────────────────────────────────────────────────
+    # ── Term emission (with optional setup for lists) ─────────────────────────
+
+    def _emit_term(self, term: Any, setup: list[str]) -> str:
+        """Return a C expression for *term*, emitting any needed construction
+        statements into *setup* first.  Always use this method (not
+        _resolve_term) when the term might be a ListLit."""
+        if isinstance(term, ListLit):
+            if not term.elements:
+                return "logos_nil()"
+            # Build from back to front; each step emits one statement.
+            cur = "logos_nil()"
+            for elt in reversed(term.elements):
+                elt_expr = self._emit_term(elt, setup)
+                n = self._fresh()
+                tmp = f"_ls_{n}"
+                setup.append(
+                    f"        logos_term {tmp} = logos_list_cons({elt_expr}, {cur});"
+                )
+                cur = tmp
+            return cur
+        else:
+            return self._resolve_term(term)
+
+    # ── Term resolution (scalars only) ────────────────────────────────────────
 
     def _resolve_var(self, name: str) -> str:
-        """C expression for a subject variable (rule parameter)."""
         if name in self._var_map:
             return self._var_map[name]
-        # Literal subject name or path root not listed as Variable
         return f"var_{_c_id(name)}"
 
     def _resolve_term(self, term: Any) -> str:
-        """C expression producing a logos_term for the given AST node."""
+        """C expression for a scalar term (no setup statements needed)."""
         if isinstance(term, Variable):
             return self._resolve_var(term.name)
         elif isinstance(term, Path):
             if len(term.parts) == 1:
                 name = term.parts[0]
-                # Uppercase single-part path treated as variable
                 if name[0].isupper() and name in self._var_map:
                     return self._var_map[name]
                 return f'logos_string("{_esc(name)}")'
             else:
                 raise CompilationError(
-                    f"Multi-part path {term} used as a term (not a lookup target) "
-                    f"— this is not supported in compiled mode"
+                    f"Multi-part path {term} used as a term — "
+                    f"not supported in compiled mode"
                 )
         elif isinstance(term, bool):
             return f"logos_int({1 if term else 0})"
@@ -554,6 +612,10 @@ class RuleEmitter:
             return f'logos_string("{_esc(term)}")'
         elif isinstance(term, DurationLit):
             return f"logos_duration({term.to_seconds()})"
+        elif isinstance(term, ListLit):
+            raise CompilationError(
+                "ListLit encountered in _resolve_term — use _emit_term instead"
+            )
         else:
             raise CompilationError(
                 f"Unsupported term type in compiled mode: "

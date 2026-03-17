@@ -11,22 +11,35 @@
 #define LOGOS_DURATION 4
 #define LOGOS_VAR      5
 #define LOGOS_NONE     6
+#define LOGOS_LIST     7   /* cons cell — .cons points to logos_cons */
+#define LOGOS_NIL      8   /* empty list */
 
 /* ── Capacity constants ─────────────────────────────────────────────────────── */
 #define LOGOS_MAX_VARS  256
 #define LOGOS_MAX_TRAIL 4096
 #define LOGOS_MAX_FACTS 4096
+#define LOGOS_MAX_CONS  65536   /* global cons pool size */
+
+/* ── Forward declaration (logos_term ↔ logos_cons mutual recursion) ─────────── */
+struct logos_cons;
 
 /* ── Term ───────────────────────────────────────────────────────────────────── */
 typedef struct {
     int tag;
     union {
-        long        i;       /* LOGOS_INT, LOGOS_BOOL */
-        double      f;       /* LOGOS_FLOAT, LOGOS_DURATION */
-        const char *s;       /* LOGOS_STRING (interned pointer) */
-        int         var_id;  /* LOGOS_VAR */
+        long              i;       /* LOGOS_INT, LOGOS_BOOL */
+        double            f;       /* LOGOS_FLOAT, LOGOS_DURATION */
+        const char       *s;       /* LOGOS_STRING (interned pointer) */
+        int               var_id;  /* LOGOS_VAR */
+        struct logos_cons *cons;   /* LOGOS_LIST */
     };
 } logos_term;
+
+/* ── Cons cell (heap-allocated from global pool, never freed) ───────────────── */
+typedef struct logos_cons {
+    logos_term head;
+    logos_term tail;   /* LOGOS_LIST or LOGOS_NIL */
+} logos_cons;
 
 /* ── Bindings ───────────────────────────────────────────────────────────────── */
 typedef struct {
@@ -98,18 +111,27 @@ double logos_degrade(double c);             /* c * 0.95                 */
 /* ── Comparison  op: 0=>=  1=<=  2=>  3=<  4==  5=!= ──────────────────────── */
 int logos_compare(logos_term l, int op, logos_term r);
 
-/* ── Term constructors ──────────────────────────────────────────────────────── */
+/* ── Scalar term constructors ───────────────────────────────────────────────── */
 logos_term   logos_int(long i);
 logos_term   logos_float(double f);
 logos_term   logos_string(const char *s);    /* interns the string */
 logos_term   logos_duration(double secs);    /* LOGOS_DURATION, .f = seconds */
 const char  *logos_intern(const char *s);
 
+/* ── List constructors (global pool — no env needed) ────────────────────────── */
+logos_term   logos_nil(void);
+logos_cons  *logos_alloc_cons(void);
+logos_term   logos_list_cons(logos_term head, logos_term tail);
+logos_term   logos_list_from_array(logos_term *terms, int n);
+int          logos_is_nil(logos_term t);
+int          logos_is_list(logos_term t);
+
 /* ── Built-in continuations ─────────────────────────────────────────────────── */
 int k_bool_capture(logos_env *env);  /* accumulates confidence, returns 0 */
 int k_naf_capture(logos_env *env);   /* sets found=1, returns 0           */
 
 /* ── Output ─────────────────────────────────────────────────────────────────── */
+void logos_print_term(logos_term t);
 void logos_print_bool_result(const char *text, int found, double conf);
 void logos_print_find_row(const char **var_names, logos_term *vals,
                           int n_vars, double conf);

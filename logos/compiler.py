@@ -3,6 +3,7 @@ Logos compiler driver: .logos source → native binary via C transpilation.
 
 Pipeline:
   parse_file(.logos) → Program AST
+  → resolve_imports()  → flattened Program (no ImportStmt nodes)
   → Compiler.generate() → C source string
   → cc <generated.c> logos_runtime.c -o <output> -O2
 """
@@ -14,11 +15,73 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from logos.ast_nodes import ImportStmt, Program
 from logos.parser import parse_file
 from logos.codegen import Compiler, CompilationError  # re-export CompilationError
 
-__all__ = ["compile_file", "CompilationError"]
+__all__ = ["compile_file", "CompilationError", "resolve_imports"]
 
+
+# ── Import flattening ─────────────────────────────────────────────────────────
+
+def resolve_imports(
+    program: Program,
+    base_dir: str,
+    _loaded: set[str] | None = None,
+    _loading: set[str] | None = None,
+) -> Program:
+    """Return a new Program with all import statements replaced by the
+    imported file's statements (recursive, deduplicated).
+
+    Args:
+        program:   The AST to flatten.
+        base_dir:  Directory used to resolve relative import paths.
+        _loaded:   Set of already-inlined canonical paths (dedup across files).
+        _loading:  Set of paths currently on the DFS stack (cycle detection).
+
+    Raises:
+        CompilationError: On circular imports or missing files.
+    """
+    if _loaded is None:
+        _loaded = set()
+    if _loading is None:
+        _loading = set()
+
+    result = []
+    for stmt in program.statements:
+        if not isinstance(stmt, ImportStmt):
+            result.append(stmt)
+            continue
+
+        # Resolve canonical path
+        src = stmt.source
+        if not os.path.isabs(src):
+            src = os.path.join(base_dir, src)
+        if not src.endswith(".logos"):
+            src += ".logos"
+        canon = os.path.normpath(src)
+
+        if canon in _loading:
+            raise CompilationError(f"Circular import: {canon}")
+        if canon in _loaded:
+            continue          # already inlined — skip duplicate
+        if not os.path.isfile(canon):
+            raise CompilationError(f"Import not found: {canon}")
+
+        _loading.add(canon)
+        imported_prog  = parse_file(canon)
+        imported_dir   = os.path.dirname(canon)
+        flattened      = resolve_imports(imported_prog, imported_dir,
+                                         _loaded, _loading)
+        _loading.discard(canon)
+        _loaded.add(canon)
+
+        result.extend(flattened.statements)
+
+    return Program(statements=result)
+
+
+# ── Compile entry point ───────────────────────────────────────────────────────
 
 def compile_file(
     logos_path: str,
@@ -44,7 +107,9 @@ def compile_file(
             Path(__file__).parent / "runtime" / "logos_runtime.c"
         )
 
+    base_dir = os.path.dirname(os.path.abspath(logos_path))
     program  = parse_file(logos_path)
+    program  = resolve_imports(program, base_dir)
     c_source = Compiler(program).generate()
 
     if keep_c:
@@ -53,7 +118,6 @@ def compile_file(
             fh.write(c_source)
         _run_cc(c_path, output_path, cc, runtime_path)
     else:
-        # Write to a temp file, compile, then delete
         fd, tmp_c = tempfile.mkstemp(suffix=".c")
         try:
             with os.fdopen(fd, "w") as fh:

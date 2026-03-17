@@ -127,8 +127,18 @@ def test_codegen_generates_c_string():
     assert len(c_source) > 500
 
 
-def test_codegen_unsupported_import():
+def test_codegen_ignores_import_stmts():
+    """Compiler silently skips ImportStmt nodes (resolve_imports handles them)."""
     from logos.parser import parse
     prog = parse('import foo from "bar.logos"')
-    with pytest.raises(CompilationError, match="import"):
-        Compiler(prog).generate()
+    # Should not raise — imports are flattened before Compiler runs
+    c_source = Compiler(prog).generate()
+    assert isinstance(c_source, str)
+
+
+def test_missing_import_raises(tmp_path):
+    """compile_file raises CompilationError when an imported file is missing."""
+    f = tmp_path / "test.logos"
+    f.write_text('import * from "nonexistent.logos"\n')
+    with pytest.raises(CompilationError, match="Import not found"):
+        compile_file(str(f), str(tmp_path / "out"))
