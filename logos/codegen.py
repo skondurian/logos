@@ -57,6 +57,27 @@ PRIMITIVES: dict[str, tuple[int, str]] = {
     "is-number":    (1, "logos_prim_is_number"),
     "is-list":      (1, "logos_prim_is_list"),
     "ground":       (1, "logos_prim_ground"),
+    # String primitives
+    "str-concat":      (3, "logos_prim_str_concat"),
+    "str-length":      (2, "logos_prim_str_length"),
+    "str-char-at":     (3, "logos_prim_str_char_at"),
+    "str-starts-with": (2, "logos_prim_str_starts_with"),
+    "str-ends-with":   (2, "logos_prim_str_ends_with"),
+    "str-slice":       (4, "logos_prim_str_slice"),
+    "str-to-number":   (2, "logos_prim_str_to_number"),
+    "number-to-str":   (2, "logos_prim_number_to_str"),
+    "str-split":       (3, "logos_prim_str_split"),
+    "str-join":        (3, "logos_prim_str_join"),
+    "str-upper":       (2, "logos_prim_str_upper"),
+    "str-lower":       (2, "logos_prim_str_lower"),
+    "str-trim":        (2, "logos_prim_str_trim"),
+    "str-contains":    (2, "logos_prim_str_contains"),
+    # Character class predicates
+    "char-alpha":      (1, "logos_prim_char_alpha"),
+    "char-digit":      (1, "logos_prim_char_digit"),
+    "char-whitespace": (1, "logos_prim_char_whitespace"),
+    "char-alnum":      (1, "logos_prim_char_alnum"),
+    "char-code":       (2, "logos_prim_char_code"),
 }
 
 
@@ -359,16 +380,28 @@ class Compiler:
 
         lines = ["    {"]
         lines.extend(setup)
-        lines += [
-            "        int    _found = 0;",
-            "        double _conf  = 0.0;",
-            "        env.capture_found = &_found;",
-            "        env.capture_conf  = &_conf;",
-            "        env.confidence    = 1.0;",
-            f"        pred_{cname}(&env, {arg_exprs}, k_bool_capture);",
-            f'        logos_print_bool_result("{_esc(text)}", _found, _conf);',
-            "    }",
-        ]
+
+        if pred in PRIMITIVES:
+            # Primitive predicates: call directly, no CPS overhead
+            _, cfunc = PRIMITIVES[pred]
+            sep = ", " if arg_exprs else ""
+            lines += [
+                f"        int    _found = {cfunc}(&env{sep}{arg_exprs});",
+                "        double _conf  = _found ? 1.0 : 0.0;",
+                f'        logos_print_bool_result("{_esc(text)}", _found, _conf);',
+            ]
+        else:
+            lines += [
+                "        int    _found = 0;",
+                "        double _conf  = 0.0;",
+                "        env.capture_found = &_found;",
+                "        env.capture_conf  = &_conf;",
+                "        env.confidence    = 1.0;",
+                f"        pred_{cname}(&env, {arg_exprs}, k_bool_capture);",
+                f'        logos_print_bool_result("{_esc(text)}", _found, _conf);',
+            ]
+
+        lines.append("    }")
         return lines
 
     def _query_term(self, arg: Any) -> str:

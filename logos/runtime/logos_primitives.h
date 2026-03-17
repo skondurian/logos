@@ -63,4 +63,32 @@ int logos_prim_is_number(logos_env *env, logos_term t);
 int logos_prim_is_list(logos_env *env, logos_term t);
 int logos_prim_ground(logos_env *env, logos_term t);
 
+/* ── String primitives ──────────────────────────────────────────────────── */
+int logos_prim_str_concat(logos_env *env, logos_term a, logos_term b,
+                          logos_term c);
+int logos_prim_str_length(logos_env *env, logos_term s, logos_term n);
+int logos_prim_str_char_at(logos_env *env, logos_term s, logos_term idx,
+                           logos_term ch);
+int logos_prim_str_starts_with(logos_env *env, logos_term s, logos_term prefix);
+int logos_prim_str_ends_with(logos_env *env, logos_term s, logos_term suffix);
+int logos_prim_str_slice(logos_env *env, logos_term s, logos_term start,
+                         logos_term end, logos_term result);
+int logos_prim_str_to_number(logos_env *env, logos_term s, logos_term n);
+int logos_prim_number_to_str(logos_env *env, logos_term n, logos_term s);
+int logos_prim_str_split(logos_env *env, logos_term s, logos_term sep,
+                         logos_term lst);
+int logos_prim_str_join(logos_env *env, logos_term lst, logos_term sep,
+                        logos_term result);
+int logos_prim_str_upper(logos_env *env, logos_term s, logos_term u);
+int logos_prim_str_lower(logos_env *env, logos_term s, logos_term l);
+int logos_prim_str_trim(logos_env *env, logos_term s, logos_term t);
+int logos_prim_str_contains(logos_env *env, logos_term s, logos_term sub);
+
+/* ── Character class predicates ─────────────────────────────────────────── */
+int logos_prim_char_alpha(logos_env *env, logos_term c);
+int logos_prim_char_digit(logos_env *env, logos_term c);
+int logos_prim_char_whitespace(logos_env *env, logos_term c);
+int logos_prim_char_alnum(logos_env *env, logos_term c);
+int logos_prim_char_code(logos_env *env, logos_term c, logos_term n);
+
 #endif /* LOGOS_PRIMITIVES_H */
