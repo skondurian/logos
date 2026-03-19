@@ -113,6 +113,18 @@ logos_compile → logos_compile_check.c (gen4)
 diff gen2 gen3 → identical  ✓
 ```
 
+## Specification
+
+Full documentation lives in [`spec/`](spec/):
+
+| Document | Contents |
+|---|---|
+| [Language Reference](spec/01_language.md) | Syntax, types, confidence, queries, grammar |
+| [Primitives](spec/02_primitives.md) | All 40+ built-in predicates |
+| [Standard Library](spec/03_stdlib.md) | lists, strings, math, io |
+| [Implementation](spec/04_implementation.md) | Interpreter, C runtime, build system, tests |
+| [Self-Hosting](spec/05_self_hosting.md) | Bootstrap chain and fixed-point proof |
+
 ## Roadmap
 
 - **Phases 0–10**: Python bootstrap interpreter ✅
