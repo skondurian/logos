@@ -41,8 +41,43 @@ query: can-vote(alice)?
 
 Output:
 ```
-can-vote(alice) → TRUE  [confidence: 1.000]
+can-vote(alice): true  [confidence: 0.950]
 ```
+
+## Native Binary Compilation
+
+Logos programs can be compiled to native binaries via a self-hosted compiler
+(the Logos compiler is written in Logos and compiles itself).
+
+### Build the compiler
+
+```bash
+make          # Python bootstrap → self-compile → build/logos_compile
+make verify   # prove compile3 == compile4 (fixed point)
+```
+
+### Compile a program
+
+```bash
+# Using the shell driver (recommended):
+bin/logoscc examples/02_voting_rules.logos -o /tmp/voting
+/tmp/voting
+
+# Or via the Python CLI:
+logos compile examples/02_voting_rules.logos -o /tmp/voting --keep-c
+```
+
+### Install system-wide
+
+```bash
+make install          # installs to /usr/local/bin/logoscc
+make install PREFIX=~/.local
+logoscc myprogram.logos -o myprogram
+```
+
+The generated binary links against a small C runtime (`logos/runtime/`) that
+handles unification, backtracking via trail marks, the semantic graph, and
+confidence arithmetic. No WAM or LLVM required.
 
 ## Architecture
 
@@ -54,17 +89,34 @@ can-vote(alice) → TRUE  [confidence: 1.000]
 | `type_system.py` | Type lattice with subtype checking |
 | `confidence.py` | ConfidenceValue with Beta distribution arithmetic |
 | `inference.py` | SLD-resolution backchaining engine |
-| `context.py` | Context hierarchy and threshold filtering |
 | `executor.py` | Orchestration pipeline |
-| `repl.py` | Interactive REPL with syntax highlighting |
+| `repl.py` | Interactive REPL and CLI entry point |
+| `codegen.py` | Python → C transpiler (CPS-based) |
+| `compiler.py` | Python compiler driver (`logos compile`) |
+| `logos/compiler.logos` | Self-hosted Logos → C compiler |
+| `logos/parser.logos` | Self-hosted Logos parser |
+| `logos/runtime/` | C runtime library (unification, graph, backtracking) |
+| `Makefile` | Bootstrap + self-compile + install |
+| `bin/logoscc` | End-to-end compilation driver script |
 
-## Specification
+## Self-Hosting
 
-See `spec/` for the full language specification.
+The Logos compiler is self-hosted: `logos/compiler.logos` compiles Logos
+source to C, and is itself compiled by the binary it produces. The build
+process proves this fixed point:
+
+```
+Python codegen → logos_bootstrap (gen1)
+logos_bootstrap → logos_compile.c (gen2, self-hosted C source)
+cc logos_compile.c → logos_compile (gen3 binary)
+logos_compile → logos_compile_check.c (gen4)
+diff gen2 gen3 → identical  ✓
+```
 
 ## Roadmap
 
-- **Phases 0–10**: Python bootstrap interpreter
-- **Phase 11**: stdlib written in Logos
-- **Phase 12**: interpreter core written in Logos
-- **Phase 13 (v1.0)**: fully self-hosted — Logos interprets itself
+- **Phases 0–10**: Python bootstrap interpreter ✅
+- **Phase 11**: stdlib written in Logos ✅
+- **Phase 12**: interpreter core written in Logos ✅
+- **Phase 13 (v1.0)**: fully self-hosted — Logos interprets itself ✅
+- **Binary compiler**: native compilation via self-hosted Logos→C transpiler ✅
