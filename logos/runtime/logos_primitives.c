@@ -109,13 +109,13 @@ int logos_prim_list_empty(logos_env *env, logos_term l) {
     return 0;
 }
 
-int logos_prim_list_head(logos_env *env, logos_term h, logos_term l) {
+int logos_prim_list_head(logos_env *env, logos_term l, logos_term h) {
     l = logos_walk(env, l);
     if (l.tag != LOGOS_LIST) return 0;
     return logos_unify(env, h, l.cons->head);
 }
 
-int logos_prim_list_tail(logos_env *env, logos_term t, logos_term l) {
+int logos_prim_list_tail(logos_env *env, logos_term l, logos_term t) {
     l = logos_walk(env, l);
     if (l.tag != LOGOS_LIST) return 0;
     return logos_unify(env, t, l.cons->tail);
@@ -137,8 +137,9 @@ int logos_prim_list_nth(logos_env *env, logos_term l, logos_term n,
     logos_term nw = logos_walk(env, n);
     logos_term cur;
     long idx;
-    if (nw.tag != LOGOS_INT) return 0;
-    idx = nw.i;
+    if      (nw.tag == LOGOS_INT)   idx = nw.i;
+    else if (nw.tag == LOGOS_FLOAT) idx = (long)nw.f;
+    else return 0;
     cur = logos_walk(env, l);
     while (idx > 0 && cur.tag == LOGOS_LIST) {
         cur = logos_walk(env, cur.cons->tail);
@@ -387,6 +388,34 @@ int logos_prim_number_to_str(logos_env *env, logos_term n, logos_term s) {
     return logos_unify(env, s, _str_term(logos_intern(buf)));
 }
 
+int logos_prim_str_unescape(logos_env *env, logos_term s, logos_term result) {
+    s = logos_walk(env, s);
+    if (s.tag != LOGOS_STRING) return 0;
+    const char *p = s.s;
+    size_t len = strlen(p);
+    char *buf = (char *)malloc(len + 1);
+    if (!buf) return 0;
+    size_t j = 0;
+    for (size_t i = 0; i < len; i++) {
+        if (p[i] == '\\' && i + 1 < len) {
+            switch (p[i+1]) {
+                case 'n':  buf[j++] = '\n'; i++; break;
+                case 't':  buf[j++] = '\t'; i++; break;
+                case 'r':  buf[j++] = '\r'; i++; break;
+                case '"':  buf[j++] = '"';  i++; break;
+                case '\\': buf[j++] = '\\'; i++; break;
+                default:   buf[j++] = p[i]; break;
+            }
+        } else {
+            buf[j++] = p[i];
+        }
+    }
+    buf[j] = '\0';
+    logos_term r = logos_string(buf);
+    free(buf);
+    return logos_unify(env, result, r);
+}
+
 int logos_prim_str_split(logos_env *env, logos_term s, logos_term sep,
                          logos_term lst) {
     s   = logos_walk(env, s);
@@ -556,4 +585,67 @@ int logos_prim_char_code(logos_env *env, logos_term c, logos_term n) {
     char ch;
     if (!_is_single_char_str(env, c, &ch)) return 0;
     return logos_unify(env, n, logos_float((double)(unsigned char)ch));
+}
+
+/* ── I/O primitives ─────────────────────────────────────────────────────── */
+
+static int _write_output_count = 0;
+int logos_prim_write_output(logos_env *env, logos_term text) {
+    text = logos_walk(env, text);
+    if (text.tag != LOGOS_STRING) return 0;
+    _write_output_count++;
+    fprintf(stderr, "[logos-debug] write-output call #%d\n", _write_output_count);
+    fputs(text.s, stdout);
+    logos_query_to_stderr = 1;  /* compiler mode: redirect query output to stderr */
+    return 1;
+}
+
+int logos_prim_write_line(logos_env *env, logos_term text) {
+    text = logos_walk(env, text);
+    if (text.tag != LOGOS_STRING) return 0;
+    puts(text.s);
+    return 1;
+}
+
+int logos_prim_write_stderr(logos_env *env, logos_term text) {
+    text = logos_walk(env, text);
+    if (text.tag != LOGOS_STRING) return 0;
+    fputs(text.s, stderr);
+    return 1;
+}
+
+/* ── Command-line argument primitives ───────────────────────────────────── */
+
+int  logos_argc  = 0;
+char **logos_argv = NULL;
+
+int logos_prim_argv(logos_env *env, logos_term n, logos_term value) {
+    n = logos_walk(env, n);
+    if (n.tag != LOGOS_FLOAT) return 0;
+    int idx = (int)n.f;
+    if (idx < 0 || idx >= logos_argc) return 0;
+    return logos_unify(env, value, logos_string(logos_argv[idx]));
+}
+
+int logos_prim_argc(logos_env *env, logos_term n) {
+    return logos_unify(env, n, logos_float((double)logos_argc));
+}
+
+int logos_prim_read_file(logos_env *env, logos_term path, logos_term content) {
+    path = logos_walk(env, path);
+    if (path.tag != LOGOS_STRING) return 0;
+    FILE *f = fopen(path.s, "r");
+    if (!f) return 0;
+    /* Read entire file */
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    char *buf = (char *)malloc((size_t)size + 1);
+    if (!buf) { fclose(f); return 0; }
+    size_t n = fread(buf, 1, (size_t)size, f);
+    buf[n] = '\0';
+    fclose(f);
+    logos_term result = logos_string(buf);
+    free(buf);
+    return logos_unify(env, content, result);
 }

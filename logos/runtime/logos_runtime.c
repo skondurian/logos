@@ -38,17 +38,51 @@ const char *logos_intern(const char *s) {
     return copy;
 }
 
-/* ── Global cons pool ───────────────────────────────────────────────────────── */
+/* ── Global cons pool (slab allocator) ──────────────────────────────────────── */
 
-static logos_cons _cons_pool[LOGOS_MAX_CONS];
-static int        _cons_pool_top = 0;
+#define CONS_SLAB_SIZE 65536   /* cons cells per slab */
+
+typedef struct _cons_slab {
+    logos_cons              cells[CONS_SLAB_SIZE];
+    int                     top;
+    struct _cons_slab      *next;
+} _cons_slab;
+
+static _cons_slab  _first_slab;
+static _cons_slab *_cur_slab = NULL;
+int                _cons_slab_count = 0;  /* non-static for cross-file debug access */
 
 logos_cons *logos_alloc_cons(void) {
-    if (_cons_pool_top >= LOGOS_MAX_CONS) {
-        fprintf(stderr, "logos: cons pool overflow (limit %d)\n", LOGOS_MAX_CONS);
-        exit(1);
+    if (_cur_slab == NULL) {
+        /* first call: initialise the embedded slab */
+        _first_slab.top  = 0;
+        _first_slab.next = NULL;
+        _cur_slab = &_first_slab;
     }
-    return &_cons_pool[_cons_pool_top++];
+    if (_cur_slab->top >= CONS_SLAB_SIZE) {
+        /* current slab full: allocate a new heap slab */
+        _cons_slab *ns = (_cons_slab *)malloc(sizeof(_cons_slab));
+        if (!ns) {
+            fprintf(stderr, "logos: out of memory allocating cons slab\n");
+            exit(1);
+        }
+        ns->top  = 0;
+        ns->next = NULL;
+        _cur_slab->next = ns;
+        _cur_slab = ns;
+        _cons_slab_count++;
+        if (_cons_slab_count % 10 == 0)
+            fprintf(stderr, "[logos] cons slabs: %d (%ldM cells)\n",
+                    _cons_slab_count,
+                    (long)_cons_slab_count * CONS_SLAB_SIZE / 1000000);
+        if (_cons_slab_count > 200) {
+            fprintf(stderr, "logos: cons slab limit reached (%d slabs = %ldM cells), aborting\n",
+                    _cons_slab_count,
+                    (long)_cons_slab_count * CONS_SLAB_SIZE / 1000000);
+            exit(1);
+        }
+    }
+    return &_cur_slab->cells[_cur_slab->top++];
 }
 
 /* ── List constructors ──────────────────────────────────────────────────────── */
@@ -111,11 +145,55 @@ logos_term logos_duration(double secs) {
     return t;
 }
 
+/* ── Environment init/teardown ───────────────────────────────────────────────── */
+
+void logos_env_init(logos_env *env) {
+    env->bindings.capacity = LOGOS_MAX_VARS;
+    env->bindings.num_vars = 0;
+    env->bindings.bindings = (logos_term *)calloc(
+        (size_t)env->bindings.capacity, sizeof(logos_term));
+    if (!env->bindings.bindings) {
+        fprintf(stderr, "logos: out of memory initializing bindings\n");
+        exit(1);
+    }
+    env->trail.capacity = LOGOS_MAX_TRAIL;
+    env->trail.top      = 0;
+    env->trail.entries  = (int *)calloc(
+        (size_t)env->trail.capacity, sizeof(int));
+    if (!env->trail.entries) {
+        fprintf(stderr, "logos: out of memory initializing trail\n");
+        exit(1);
+    }
+}
+
+void logos_env_free(logos_env *env) {
+    free(env->bindings.bindings);
+    free(env->trail.entries);
+    env->bindings.bindings = NULL;
+    env->trail.entries     = NULL;
+}
+
 /* ── Variables ──────────────────────────────────────────────────────────────── */
 
 logos_term logos_alloc_var(logos_env *env) {
     logos_term t, none;
-    int id = env->bindings.num_vars++;
+    int id;
+    /* Grow bindings array if needed */
+    if (env->bindings.num_vars >= env->bindings.capacity) {
+        int new_cap = env->bindings.capacity * 2;
+        logos_term *new_b = (logos_term *)realloc(
+            env->bindings.bindings, (size_t)new_cap * sizeof(logos_term));
+        if (!new_b) {
+            fprintf(stderr, "logos: out of memory growing bindings\n");
+            exit(1);
+        }
+        /* Zero-initialize the new portion */
+        memset(new_b + env->bindings.capacity, 0,
+               (size_t)(new_cap - env->bindings.capacity) * sizeof(logos_term));
+        env->bindings.bindings = new_b;
+        env->bindings.capacity = new_cap;
+    }
+    id = env->bindings.num_vars++;
     t.tag    = LOGOS_VAR;
     t.var_id = id;
     none.tag = LOGOS_NONE;
@@ -137,17 +215,23 @@ logos_term logos_walk(logos_env *env, logos_term t) {
 /* ── Backtracking ───────────────────────────────────────────────────────────── */
 
 logos_mark_t logos_mark(logos_env *env) {
-    return env->trail.top;
+    logos_mark_t m;
+    m.trail_top = env->trail.top;
+    m.num_vars  = env->bindings.num_vars;
+    m.cont_ctx  = env->cont_ctx;
+    return m;
 }
 
 void logos_undo(logos_env *env, logos_mark_t mark) {
     logos_term none;
     none.tag = LOGOS_NONE;
     none.i   = 0;
-    while (env->trail.top > mark) {
+    while (env->trail.top > mark.trail_top) {
         int var_id = env->trail.entries[--env->trail.top];
         env->bindings.bindings[var_id] = none;
     }
+    env->bindings.num_vars = mark.num_vars;
+    env->cont_ctx          = mark.cont_ctx;
 }
 
 /* ── Unification ────────────────────────────────────────────────────────────── */
@@ -159,14 +243,28 @@ int logos_unify(logos_env *env, logos_term a, logos_term b) {
 
     if (a.tag == LOGOS_VAR) {
         env->bindings.bindings[a.var_id] = b;
-        if (env->trail.top < LOGOS_MAX_TRAIL)
-            env->trail.entries[env->trail.top++] = a.var_id;
+        if (env->trail.top >= env->trail.capacity) {
+            int new_cap = env->trail.capacity * 2;
+            int *new_t  = (int *)realloc(env->trail.entries,
+                                         (size_t)new_cap * sizeof(int));
+            if (!new_t) { fprintf(stderr, "logos: out of memory growing trail\n"); exit(1); }
+            env->trail.entries  = new_t;
+            env->trail.capacity = new_cap;
+        }
+        env->trail.entries[env->trail.top++] = a.var_id;
         return 1;
     }
     if (b.tag == LOGOS_VAR) {
         env->bindings.bindings[b.var_id] = a;
-        if (env->trail.top < LOGOS_MAX_TRAIL)
-            env->trail.entries[env->trail.top++] = b.var_id;
+        if (env->trail.top >= env->trail.capacity) {
+            int new_cap = env->trail.capacity * 2;
+            int *new_t  = (int *)realloc(env->trail.entries,
+                                         (size_t)new_cap * sizeof(int));
+            if (!new_t) { fprintf(stderr, "logos: out of memory growing trail\n"); exit(1); }
+            env->trail.entries  = new_t;
+            env->trail.capacity = new_cap;
+        }
+        env->trail.entries[env->trail.top++] = b.var_id;
         return 1;
     }
 
@@ -310,7 +408,7 @@ int k_bool_capture(logos_env *env) {
         *conf  = logos_disjoin(*conf, env->confidence);
         *found = 1;
     }
-    return 0;
+    return 1;  /* stop after first solution — bool queries ask "does it hold?", not "how many ways?" */
 }
 
 int k_naf_capture(logos_env *env) {
@@ -322,6 +420,10 @@ int k_naf_capture(logos_env *env) {
 }
 
 /* ── Output ─────────────────────────────────────────────────────────────────── */
+
+/* Set to 1 after write-output is called (compiler mode) so that bool/find
+ * query results are redirected to stderr rather than mixing with C output. */
+int logos_query_to_stderr = 0;
 
 void logos_print_term(logos_term t) {
     logos_term cur;
@@ -355,18 +457,20 @@ void logos_print_term(logos_term t) {
 }
 
 void logos_print_bool_result(const char *text, int found, double conf) {
-    printf("%s: %s", text, found ? "true" : "false");
-    if (found) printf("  [confidence: %.3f]", conf);
-    printf("\n");
+    FILE *out = logos_query_to_stderr ? stderr : stdout;
+    fprintf(out, "%s: %s", text, found ? "true" : "false");
+    if (found) fprintf(out, "  [confidence: %.3f]", conf);
+    fprintf(out, "\n");
 }
 
 void logos_print_find_row(const char **var_names, logos_term *vals,
                           int n_vars, double conf) {
+    FILE *out = logos_query_to_stderr ? stderr : stdout;
     int i;
     for (i = 0; i < n_vars; i++) {
-        if (i > 0) printf(", ");
-        printf("%s=", var_names[i]);
+        if (i > 0) fprintf(out, ", ");
+        fprintf(out, "%s=", var_names[i]);
         logos_print_term(vals[i]);
     }
-    printf("  [confidence: %.3f]\n", conf);
+    fprintf(out, "  [confidence: %.3f]\n", conf);
 }

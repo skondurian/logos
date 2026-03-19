@@ -167,6 +167,31 @@ parse-val(["id", Name], Tokens, Rest) if:
   not tok-peek-val("KEYWORD", "of", Rest)
   not tok-peek-type("DOT", Rest)
 
+// List literal: [elem1, elem2, ...] → ["list-pat", [e1, e2, ...]]
+parse-val(["list-pat", Elems], Tokens, Rest) if:
+  tok-type("LBRACKET", Av1, Tokens, T1)
+  parse-list-elems(Elems, T1, T2)
+  tok-type("RBRACKET", Av2, T2, Rest)
+
+parse-list-elems([], Tokens, Tokens) if:
+  tok-peek-type("RBRACKET", Tokens)
+
+parse-list-elems(Elems, Tokens, Rest) if:
+  not tok-peek-type("RBRACKET", Tokens)
+  parse-val(Head, Tokens, T1)
+  parse-list-elems-rest(Tail, T1, Rest)
+  list-cons(Head, Tail, Elems)
+
+parse-list-elems-rest([], Tokens, Tokens) if:
+  tok-peek-type("RBRACKET", Tokens)
+
+parse-list-elems-rest(Elems, Tokens, Rest) if:
+  not tok-peek-type("RBRACKET", Tokens)
+  tok-type("COMMA", Av1, Tokens, T1)
+  parse-val(Head, T1, T2)
+  parse-list-elems-rest(Tail, T2, Rest)
+  list-cons(Head, Tail, Elems)
+
 // ── Argument list parsing ─────────────────────────────────────────────────────
 
 parse-arg-list([], Tokens, Tokens) if:

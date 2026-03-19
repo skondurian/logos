@@ -330,12 +330,21 @@ class Parser:
     def parse_string(self) -> str:
         s = self.expect("STRING").value
         inner = s[1:-1]  # strip outer quotes
-        # Unescape basic escape sequences
-        return (inner.replace("\\n", "\n")
-                     .replace("\\t", "\t")
-                     .replace("\\r", "\r")
-                     .replace('\\"', '"')
-                     .replace("\\\\", "\\"))
+        # Single-pass unescape so that \\n → \n (backslash+n), not newline
+        result: list[str] = []
+        i = 0
+        while i < len(inner):
+            if inner[i] == '\\' and i + 1 < len(inner):
+                c = inner[i + 1]
+                if   c == 'n':  result.append('\n'); i += 2
+                elif c == 't':  result.append('\t'); i += 2
+                elif c == 'r':  result.append('\r'); i += 2
+                elif c == '"':  result.append('"');  i += 2
+                elif c == '\\': result.append('\\'); i += 2
+                else:           result.append('\\'); i += 1
+            else:
+                result.append(inner[i]); i += 1
+        return ''.join(result)
 
     def parse_set_lit(self) -> SetLit:
         self.expect("LBRACE")

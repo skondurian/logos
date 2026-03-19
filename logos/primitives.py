@@ -570,6 +570,34 @@ def prim_read_file(args, bindings, engine):
             pass
 
 
+@primitive("argv")
+def prim_argv(args, bindings, engine):
+    """argv(N, Value) — Value = sys.argv[N] (0-based); fails if out of range"""
+    import sys
+    if len(args) != 2:
+        return
+    n, value = args
+    if not isinstance(n, (int, float)):
+        return
+    idx = int(n)
+    if idx < 0 or idx >= len(sys.argv):
+        return
+    new_b = _unify(value, sys.argv[idx], bindings)
+    if new_b is not None:
+        yield _proof(new_b)
+
+
+@primitive("argc")
+def prim_argc(args, bindings, engine):
+    """argc(N) — N = len(sys.argv)"""
+    import sys
+    if len(args) != 1:
+        return
+    new_b = _unify(args[0], float(len(sys.argv)), bindings)
+    if new_b is not None:
+        yield _proof(new_b)
+
+
 @primitive("lex-file")
 def prim_lex_file(args, bindings, engine):
     """lex-file(Path, Tokens) — reads and tokenizes a .logos file.
@@ -628,6 +656,18 @@ def prim_write_line(args, bindings, engine):
     text = args[0]
     if isinstance(text, str):
         print(text)
+        yield _proof(bindings)
+
+
+@primitive("write-stderr")
+def prim_write_stderr(args, bindings, engine):
+    """write-stderr(Text) — prints Text to stderr (no newline)"""
+    import sys as _sys
+    if len(args) != 1:
+        return
+    text = args[0]
+    if isinstance(text, str):
+        _sys.stderr.write(text)
         yield _proof(bindings)
 
 

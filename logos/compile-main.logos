@@ -1,0 +1,21 @@
+// logos/compile-main.logos — standalone Logos-to-C compiler binary entry point
+//
+// Usage: logos_compile <input.logos>
+//   Reads argv[1] as the input file path, compiles to C, writes to stdout.
+//   Status written to stderr.
+//
+// Build:
+//   logos compile logos/compile-main.logos -o logos_compile
+
+import * from "compiler"
+
+// Read input path from argv[1] and compile
+compile-main("done") if:
+  argv(1, InputPath)
+  compile-file(InputPath)
+  write-stderr("done\n")
+
+compile-main("done") if:
+  write-stderr("error: compilation failed\n")
+
+query: compile-main("done")?

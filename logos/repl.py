@@ -265,6 +265,9 @@ def main():
     compile_cmd.add_argument("-o", "--output", help="Output binary path (default: file without extension)")
     compile_cmd.add_argument("--cc", default="cc", help="C compiler to use (default: cc)")
     compile_cmd.add_argument("--keep-c", action="store_true", help="Keep generated .c file")
+    flatten_cmd = sub.add_parser("flatten", help="Inline all imports into a single self-contained .logos file")
+    flatten_cmd.add_argument("file", help="Path to entry-point .logos file")
+    flatten_cmd.add_argument("-o", "--output", help="Output path (default: stdout)")
     args = ap.parse_args()
 
     if args.command == "compile":
@@ -276,6 +279,18 @@ def main():
         try:
             compile_file(args.file, output, cc=args.cc, keep_c=args.keep_c)
             print(f"Compiled: {output}")
+        except CompilationError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            sys.exit(1)
+    elif args.command == "flatten":
+        import os
+        from logos.compiler import flatten_file, CompilationError
+        try:
+            result = flatten_file(args.file, output_path=args.output)
+            if args.output is None:
+                print(result, end="")
+            else:
+                print(f"Flattened: {args.output}")
         except CompilationError as exc:
             print(f"Error: {exc}", file=sys.stderr)
             sys.exit(1)
@@ -296,8 +311,6 @@ def main():
         from logos.ast_nodes import PredicateCall
         logos_dir = os.path.join(os.path.dirname(__file__))
         ex = Executor()
-        ex.load_file(os.path.join(logos_dir, "parser.logos"))
-        ex.load_file(os.path.join(logos_dir, "evaluator.logos"))
         ex.load_file(os.path.join(logos_dir, "interpreter.logos"))
         target = os.path.abspath(args.file)
         goal = PredicateCall(name="interpret", args=[target])

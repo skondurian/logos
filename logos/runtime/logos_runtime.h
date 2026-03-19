@@ -15,10 +15,10 @@
 #define LOGOS_NIL      8   /* empty list */
 
 /* ── Capacity constants ─────────────────────────────────────────────────────── */
-#define LOGOS_MAX_VARS  256
-#define LOGOS_MAX_TRAIL 4096
+#define LOGOS_MAX_VARS  32768
+#define LOGOS_MAX_TRAIL 262144
 #define LOGOS_MAX_FACTS 4096
-#define LOGOS_MAX_CONS  65536   /* global cons pool size */
+#define LOGOS_MAX_CONS  2097152  /* legacy constant — slab allocator no longer bounded */
 
 /* ── Forward declaration (logos_term ↔ logos_cons mutual recursion) ─────────── */
 struct logos_cons;
@@ -41,19 +41,21 @@ typedef struct logos_cons {
     logos_term tail;   /* LOGOS_LIST or LOGOS_NIL */
 } logos_cons;
 
-/* ── Bindings ───────────────────────────────────────────────────────────────── */
+/* ── Bindings (dynamically grown heap array) ─────────────────────────────────── */
 typedef struct {
-    logos_term bindings[LOGOS_MAX_VARS];
-    int        num_vars;
+    logos_term *bindings;  /* heap-allocated; grows on demand               */
+    int         num_vars;  /* logical count of allocated variables           */
+    int         capacity;  /* current allocated size of bindings[]           */
 } logos_bindings;
 
-/* ── Trail ──────────────────────────────────────────────────────────────────── */
+/* ── Trail (dynamically grown heap array) ────────────────────────────────────── */
 typedef struct {
-    int entries[LOGOS_MAX_TRAIL];
-    int top;
+    int *entries;   /* heap-allocated; grows on demand */
+    int  top;
+    int  capacity;
 } logos_trail;
 
-typedef int logos_mark_t;
+typedef struct { int trail_top; int num_vars; void *cont_ctx; } logos_mark_t;
 
 /* ── Fact ───────────────────────────────────────────────────────────────────── */
 typedef struct {
@@ -86,6 +88,10 @@ typedef struct logos_env {
 /* ── Scan callback ──────────────────────────────────────────────────────────── */
 typedef int (*logos_scan_cb)(logos_env *env, const char *subj,
                               logos_term val, double conf, logos_cont k);
+
+/* ── Environment init/teardown ──────────────────────────────────────────────── */
+void logos_env_init(logos_env *env);   /* initialize dynamic pools             */
+void logos_env_free(logos_env *env);   /* release dynamic pools                */
 
 /* ── Backtracking ───────────────────────────────────────────────────────────── */
 logos_mark_t logos_mark(logos_env *env);
@@ -132,6 +138,7 @@ int k_bool_capture(logos_env *env);  /* accumulates confidence, returns 0 */
 int k_naf_capture(logos_env *env);   /* sets found=1, returns 0           */
 
 /* ── Output ─────────────────────────────────────────────────────────────────── */
+extern int logos_query_to_stderr;  /* set to 1 to redirect query output to stderr */
 void logos_print_term(logos_term t);
 void logos_print_bool_result(const char *text, int found, double conf);
 void logos_print_find_row(const char **var_names, logos_term *vals,

@@ -1,0 +1,2112 @@
+// logos/compiler.logos — Logos-to-C compiler written in Logos
+//
+// Takes a parsed program AST (in parser.logos format) and emits C source code.
+//
+// Entry points:
+//   compile-program(AST, CSource)  — compile AST to C string
+//   compile-file(InputPath)        — lex + parse + compile + write to stdout
+//
+// AST format consumed:
+//   ["program", Stmts]
+//   ["bind", Subject, Predicate, Value]
+//   ["rule", Name, HeadArgs, Conditions]
+//   ["unit", Name, HeadArgs]
+//   ["query-bool", Name, Args]
+//   ["query-find", VarNames, Conditions]
+//   ["import", ...] / ["skip-type-decl", ...] — skipped
+
+import * from "stdlib/lists"
+import * from "stdlib/strings"
+import * from "parser"
+
+// ── Utility: convert Logos name to C identifier fragment ──────────────────────
+
+// c-id(Name, CName) — replace - and . with _ in Name
+c-id(Name, CName) if:
+  str-split(Name, "-", Parts)
+  str-join(Parts, "_", Tmp)
+  str-split(Tmp, ".", Parts2)
+  str-join(Parts2, "_", CName)
+
+// ── Utility: string helpers ────────────────────────────────────────────────────
+
+str-concat5(A, B, C, D, E, R) if:
+  str-concat(A, B, AB)
+  str-concat(AB, C, ABC)
+  str-concat(ABC, D, ABCD)
+  str-concat(ABCD, E, R)
+
+str-concat6(A, B, C, D, E, F, R) if:
+  str-concat(A, B, AB)
+  str-concat(AB, C, ABC)
+  str-concat(ABC, D, ABCD)
+  str-concat(ABCD, E, ABCDE)
+  str-concat(ABCDE, F, R)
+
+str-concat7(A, B, C, D, E, F, G, R) if:
+  str-concat(A, B, AB)
+  str-concat(AB, C, ABC)
+  str-concat(ABC, D, ABCD)
+  str-concat(ABCD, E, ABCDE)
+  str-concat(ABCDE, F, ABCDEF)
+  str-concat(ABCDEF, G, R)
+
+str-concat8(A, B, C, D, E, F, G, H, R) if:
+  str-concat(A, B, AB)
+  str-concat(AB, C, ABC)
+  str-concat(ABC, D, ABCD)
+  str-concat(ABCD, E, ABCDE)
+  str-concat(ABCDE, F, ABCDEF)
+  str-concat(ABCDEF, G, ABCDEFG)
+  str-concat(ABCDEFG, H, R)
+
+// number-to-c(N, S) — convert number to C-suitable string (no trailing .0)
+number-to-c(N, S) if:
+  number-to-str(N, Raw)
+  str-ends-with(Raw, ".0")
+  str-length(Raw, L)
+  num-sub(L, 2.0, L2)
+  str-slice(Raw, 0.0, L2, S)
+
+number-to-c(N, S) if:
+  number-to-str(N, S)
+  not str-ends-with(S, ".0")
+
+// number-to-float-str(N, S) — always produce a float string (with .0 if needed)
+number-to-float-str(N, S) if:
+  number-to-str(N, Raw)
+  str-contains(Raw, ".")
+  equal(S, Raw)
+
+number-to-float-str(N, S) if:
+  number-to-str(N, Raw)
+  not str-contains(Raw, ".")
+  str-concat(Raw, ".0", S)
+
+// strip-quotes(Quoted, Unquoted) — remove leading/trailing " and interpret escape sequences
+strip-quotes(Quoted, Unquoted) if:
+  str-length(Quoted, L)
+  num-sub(L, 1.0, L1)
+  str-slice(Quoted, 1.0, L1, Raw)
+  str-unescape(Raw, Unquoted)
+
+// ── Duration unit to seconds ───────────────────────────────────────────────────
+
+dur-unit-secs("second",  1.0)
+dur-unit-secs("seconds", 1.0)
+dur-unit-secs("minute",  60.0)
+dur-unit-secs("minutes", 60.0)
+dur-unit-secs("hour",    3600.0)
+dur-unit-secs("hours",   3600.0)
+dur-unit-secs("day",     86400.0)
+dur-unit-secs("days",    86400.0)
+dur-unit-secs("month",   2629800.0)
+dur-unit-secs("months",  2629800.0)
+dur-unit-secs("year",    31557600.0)
+dur-unit-secs("years",   31557600.0)
+
+// dur-to-secs(N, Unit, Secs) — N * unit_secs
+dur-to-secs(N, Unit, Secs) if:
+  dur-unit-secs(Unit, PerUnit)
+  num-mul(N, PerUnit, Secs)
+
+// ── Operator to numeric code ───────────────────────────────────────────────────
+
+op-code(">=", "0")
+op-code("<=", "1")
+op-code(">",  "2")
+op-code("<",  "3")
+op-code("=",  "4")
+op-code("!=", "5")
+
+// ── Primitive predicate table ──────────────────────────────────────────────────
+
+is-primitive("equal")
+is-primitive("true")
+is-primitive("list-cons")
+is-primitive("list-empty")
+is-primitive("list-head")
+is-primitive("list-tail")
+is-primitive("list-length")
+is-primitive("list-nth")
+is-primitive("list-append")
+is-primitive("list-reverse")
+is-primitive("list-flatten")
+is-primitive("num-add")
+is-primitive("num-sub")
+is-primitive("num-mul")
+is-primitive("num-div")
+is-primitive("num-mod")
+is-primitive("num-abs")
+is-primitive("num-floor")
+is-primitive("num-ceil")
+is-primitive("num-min")
+is-primitive("num-max")
+is-primitive("is-string")
+is-primitive("is-number")
+is-primitive("is-list")
+is-primitive("ground")
+is-primitive("assert-fact")
+is-primitive("register-rule-ast")
+is-primitive("exec-bool-query-ast")
+is-primitive("exec-find-query-ast")
+is-primitive("str-concat")
+is-primitive("str-length")
+is-primitive("str-char-at")
+is-primitive("str-starts-with")
+is-primitive("str-ends-with")
+is-primitive("str-slice")
+is-primitive("str-to-number")
+is-primitive("number-to-str")
+is-primitive("str-split")
+is-primitive("str-join")
+is-primitive("str-unescape")
+is-primitive("str-upper")
+is-primitive("str-lower")
+is-primitive("str-trim")
+is-primitive("str-contains")
+is-primitive("char-alpha")
+is-primitive("char-digit")
+is-primitive("char-whitespace")
+is-primitive("char-alnum")
+is-primitive("char-code")
+is-primitive("lex-file")
+is-primitive("lex-source")
+is-primitive("write-output")
+is-primitive("write-line")
+is-primitive("write-stderr")
+is-primitive("read-file")
+is-primitive("argv")
+is-primitive("argc")
+
+// prim-cfunc(Name, CFunc) — C function name for a primitive
+prim-cfunc("equal",                "logos_prim_equal")
+prim-cfunc("true",                 "logos_prim_true")
+prim-cfunc("list-cons",            "logos_prim_list_cons")
+prim-cfunc("list-empty",           "logos_prim_list_empty")
+prim-cfunc("list-head",            "logos_prim_list_head")
+prim-cfunc("list-tail",            "logos_prim_list_tail")
+prim-cfunc("list-length",          "logos_prim_list_length")
+prim-cfunc("list-nth",             "logos_prim_list_nth")
+prim-cfunc("list-append",          "logos_prim_list_append")
+prim-cfunc("list-reverse",         "logos_prim_list_reverse")
+prim-cfunc("list-flatten",         "logos_prim_list_flatten")
+prim-cfunc("num-add",              "logos_prim_num_add")
+prim-cfunc("num-sub",              "logos_prim_num_sub")
+prim-cfunc("num-mul",              "logos_prim_num_mul")
+prim-cfunc("num-div",              "logos_prim_num_div")
+prim-cfunc("num-mod",              "logos_prim_num_mod")
+prim-cfunc("num-abs",              "logos_prim_num_abs")
+prim-cfunc("num-floor",            "logos_prim_num_floor")
+prim-cfunc("num-ceil",             "logos_prim_num_ceil")
+prim-cfunc("num-min",              "logos_prim_num_min")
+prim-cfunc("num-max",              "logos_prim_num_max")
+prim-cfunc("is-string",            "logos_prim_is_string")
+prim-cfunc("is-number",            "logos_prim_is_number")
+prim-cfunc("is-list",              "logos_prim_is_list")
+prim-cfunc("ground",               "logos_prim_ground")
+prim-cfunc("assert-fact",          "logos_prim_assert_fact")
+prim-cfunc("register-rule-ast",    "logos_prim_register_rule_ast")
+prim-cfunc("exec-bool-query-ast",  "logos_prim_exec_bool_query_ast")
+prim-cfunc("exec-find-query-ast",  "logos_prim_exec_find_query_ast")
+prim-cfunc("str-concat",           "logos_prim_str_concat")
+prim-cfunc("str-length",           "logos_prim_str_length")
+prim-cfunc("str-char-at",          "logos_prim_str_char_at")
+prim-cfunc("str-starts-with",      "logos_prim_str_starts_with")
+prim-cfunc("str-ends-with",        "logos_prim_str_ends_with")
+prim-cfunc("str-slice",            "logos_prim_str_slice")
+prim-cfunc("str-to-number",        "logos_prim_str_to_number")
+prim-cfunc("number-to-str",        "logos_prim_number_to_str")
+prim-cfunc("str-split",            "logos_prim_str_split")
+prim-cfunc("str-join",             "logos_prim_str_join")
+prim-cfunc("str-unescape",         "logos_prim_str_unescape")
+prim-cfunc("str-upper",            "logos_prim_str_upper")
+prim-cfunc("str-lower",            "logos_prim_str_lower")
+prim-cfunc("str-trim",             "logos_prim_str_trim")
+prim-cfunc("str-contains",         "logos_prim_str_contains")
+prim-cfunc("char-alpha",           "logos_prim_char_alpha")
+prim-cfunc("char-digit",           "logos_prim_char_digit")
+prim-cfunc("char-whitespace",      "logos_prim_char_whitespace")
+prim-cfunc("char-alnum",           "logos_prim_char_alnum")
+prim-cfunc("char-code",            "logos_prim_char_code")
+prim-cfunc("lex-file",             "logos_prim_lex_file")
+prim-cfunc("lex-source",           "logos_prim_lex_source")
+prim-cfunc("write-output",         "logos_prim_write_output")
+prim-cfunc("write-line",           "logos_prim_write_line")
+prim-cfunc("write-stderr",         "logos_prim_write_stderr")
+prim-cfunc("read-file",            "logos_prim_read_file")
+prim-cfunc("argv",                 "logos_prim_argv")
+prim-cfunc("argc",                 "logos_prim_argc")
+
+// ── C string escaping ─────────────────────────────────────────────────────────
+
+// c-esc(S, Escaped) — escape backslashes and quotes in S for C string literals
+c-esc(S, Escaped) if:
+  str-split(S, "\\", Parts1)
+  str-join(Parts1, "\\\\", T1)
+  str-split(T1, "\"", Parts2)
+  str-join(Parts2, "\\\"", T2)
+  str-split(T2, "\n", Parts3)
+  str-join(Parts3, "\\n", Escaped)
+
+// ── Value expression generation ───────────────────────────────────────────────
+
+// value-expr(Value, Expr) — C expression for an AST value
+value-expr(["duration", N, Unit], Expr) if:
+  dur-to-secs(N, Unit, Secs)
+  number-to-float-str(Secs, SecsStr)
+  str-concat3("logos_duration(", SecsStr, ")", Expr)
+
+value-expr(["id", Name], Expr) if:
+  c-esc(Name, Esc)
+  str-concat3("logos_string(\"", Esc, "\")", Expr)
+
+// String tokens include surrounding quotes — strip them before escaping
+value-expr(S, Expr) if:
+  is-string(S)
+  str-starts-with(S, "\"")
+  strip-quotes(S, Inner)
+  c-esc(Inner, Esc)
+  str-concat3("logos_string(\"", Esc, "\")", Expr)
+
+value-expr(S, Expr) if:
+  is-string(S)
+  not str-starts-with(S, "\"")
+  c-esc(S, Esc)
+  str-concat3("logos_string(\"", Esc, "\")", Expr)
+
+value-expr(N, Expr) if:
+  is-number(N)
+  number-to-float-str(N, NS)
+  str-concat3("logos_float(", NS, ")", Expr)
+
+// ── Head arg C name ───────────────────────────────────────────────────────────
+
+// head-arg-cname(Arg, Pos, CName) — derive C parameter name from head arg
+head-arg-cname(["var", Name], Pos, CName) if:
+  c-id(Name, CName)
+
+head-arg-cname(["id", Name], Pos, CName) if:
+  c-id(Name, CName)
+
+head-arg-cname(N, Pos, CName) if:
+  is-number(N)
+  number-to-str(Pos, PosStr)
+  str-concat("_harg", PosStr, CName)
+
+head-arg-cname(S, Pos, CName) if:
+  is-string(S)
+  number-to-str(Pos, PosStr)
+  str-concat("_harg", PosStr, CName)
+
+head-arg-cname(["list-pat", Elems], Pos, CName) if:
+  number-to-c(Pos, PosStr)
+  str-concat("_harg", PosStr, CName)
+
+// ── Head args parameter list ──────────────────────────────────────────────────
+
+// head-params-decl(HeadArgs, ParamStr) — "logos_term var_X, logos_term var_Y"
+// Deduplicates variable names: duplicate vars get suffix _POS.
+head-params-decl(HeadArgs, ParamStr) if:
+  head-params-decl-acc(HeadArgs, 0.0, [], [], ParamStr)
+
+head-params-decl-acc([], Pos, Seen, Acc, Result) if:
+  list-reverse(Acc, Rev)
+  str-join(Rev, ", ", Result)
+
+// First occurrence of this CName
+head-params-decl-acc(HeadArgs, Pos, Seen, Acc, Result) if:
+  list-cons(Arg, Rest, HeadArgs)
+  head-arg-cname(Arg, Pos, CName)
+  not list-member(CName, Seen)
+  str-concat("logos_term var_", CName, Decl)
+  list-cons(CName, Seen, NewSeen)
+  list-cons(Decl, Acc, NewAcc)
+  num-add(Pos, 1.0, NextPos)
+  head-params-decl-acc(Rest, NextPos, NewSeen, NewAcc, Result)
+
+// Duplicate: add position suffix to make unique
+head-params-decl-acc(HeadArgs, Pos, Seen, Acc, Result) if:
+  list-cons(Arg, Rest, HeadArgs)
+  head-arg-cname(Arg, Pos, CName)
+  list-member(CName, Seen)
+  number-to-str(Pos, PosStr)
+  str-concat(CName, "_", Tmp)
+  str-concat(Tmp, PosStr, UniqName)
+  str-concat("logos_term var_", UniqName, Decl)
+  list-cons(UniqName, Seen, NewSeen)
+  list-cons(Decl, Acc, NewAcc)
+  num-add(Pos, 1.0, NextPos)
+  head-params-decl-acc(Rest, NextPos, NewSeen, NewAcc, Result)
+
+// head-params-pass(HeadArgs, PassStr) — "var_X, var_Y"
+// Deduplicates to match head-params-decl output.
+head-params-pass(HeadArgs, PassStr) if:
+  head-params-pass-acc(HeadArgs, 0.0, [], [], PassStr)
+
+head-params-pass-acc([], Pos, Seen, Acc, Result) if:
+  list-reverse(Acc, Rev)
+  str-join(Rev, ", ", Result)
+
+// First occurrence
+head-params-pass-acc(HeadArgs, Pos, Seen, Acc, Result) if:
+  list-cons(Arg, Rest, HeadArgs)
+  head-arg-cname(Arg, Pos, CName)
+  not list-member(CName, Seen)
+  str-concat("var_", CName, PassExpr)
+  list-cons(CName, Seen, NewSeen)
+  list-cons(PassExpr, Acc, NewAcc)
+  num-add(Pos, 1.0, NextPos)
+  head-params-pass-acc(Rest, NextPos, NewSeen, NewAcc, Result)
+
+// Duplicate: use unique name
+head-params-pass-acc(HeadArgs, Pos, Seen, Acc, Result) if:
+  list-cons(Arg, Rest, HeadArgs)
+  head-arg-cname(Arg, Pos, CName)
+  list-member(CName, Seen)
+  number-to-str(Pos, PosStr)
+  str-concat(CName, "_", Tmp)
+  str-concat(Tmp, PosStr, UniqName)
+  str-concat("var_", UniqName, PassExpr)
+  list-cons(UniqName, Seen, NewSeen)
+  list-cons(PassExpr, Acc, NewAcc)
+  num-add(Pos, 1.0, NextPos)
+  head-params-pass-acc(Rest, NextPos, NewSeen, NewAcc, Result)
+
+// ── Condition arg expression ──────────────────────────────────────────────────
+
+// cond-arg-expr(Arg, Expr) — C expression for a condition argument
+cond-arg-expr(["var", Name], Expr) if:
+  c-id(Name, CName)
+  str-concat("var_", CName, Expr)
+
+cond-arg-expr(["id", Name], Expr) if:
+  c-esc(Name, Esc)
+  str-concat3("logos_string(\"", Esc, "\")", Expr)
+
+cond-arg-expr(["duration", N, Unit], Expr) if:
+  dur-to-secs(N, Unit, Secs)
+  number-to-float-str(Secs, SecsStr)
+  str-concat3("logos_duration(", SecsStr, ")", Expr)
+
+cond-arg-expr(["path", Subj, Field], Expr) if:
+  c-esc(Subj, ESubj)
+  c-esc(Field, EField)
+  str-concat5("logos_graph_get(env->graph, \"", ESubj, "\", \"", EField, "\")", Expr)
+
+cond-arg-expr(["path-var", VarName, Field], Expr) if:
+  c-id(VarName, CVarName)
+  str-concat3("logos_walk(env, var_", CVarName, ").s", Expr)
+
+// String tokens include surrounding quotes — strip them before escaping
+cond-arg-expr(S, Expr) if:
+  is-string(S)
+  str-starts-with(S, "\"")
+  strip-quotes(S, Inner)
+  c-esc(Inner, Esc)
+  str-concat3("logos_string(\"", Esc, "\")", Expr)
+
+cond-arg-expr(S, Expr) if:
+  is-string(S)
+  not str-starts-with(S, "\"")
+  c-esc(S, Esc)
+  str-concat3("logos_string(\"", Esc, "\")", Expr)
+
+cond-arg-expr(N, Expr) if:
+  is-number(N)
+  number-to-float-str(N, NS)
+  str-concat3("logos_float(", NS, ")", Expr)
+
+// List literal in condition arg: build a logos_list_cons chain
+cond-arg-expr(["list-pat", Elems], Expr) if:
+  cond-arg-list-expr(Elems, Expr)
+
+cond-arg-list-expr([], "logos_nil()")
+
+cond-arg-list-expr(Elems, Expr) if:
+  list-cons(Head, Tail, Elems)
+  cond-arg-expr(Head, HeadExpr)
+  cond-arg-list-expr(Tail, TailExpr)
+  str-concat3("logos_list_cons(", HeadExpr, ", ", L1)
+  str-concat(L1, TailExpr, L2)
+  str-concat(L2, ")", Expr)
+
+// ── Condition arg list to comma-joined expression ─────────────────────────────
+
+cond-args-expr(Args, Expr) if:
+  cond-args-expr-acc(Args, [], Expr)
+
+cond-args-expr-acc([], Acc, Expr) if:
+  list-reverse(Acc, Rev)
+  str-join(Rev, ", ", Expr)
+
+cond-args-expr-acc(Args, Acc, Expr) if:
+  list-cons(Arg, Rest, Args)
+  cond-arg-expr(Arg, E)
+  list-cons(E, Acc, NewAcc)
+  cond-args-expr-acc(Rest, NewAcc, Expr)
+
+// ── Comparison condition codegen ──────────────────────────────────────────────
+
+// emit-cmp(Left, Op, Right, Idx, Lines) — emit comparison condition lines
+// Case: path-var (P.field OP rhs)
+emit-cmp(["path-var", VarName, Field], Op, Rhs, Idx, Lines) if:
+  c-id(VarName, CVarName)
+  op-code(Op, OpNum)
+  number-to-str(Idx, IdxS)
+  rhs-term-expr(Rhs, RhsExpr)
+  c-esc(Field, EField)
+  str-concat("_val_", IdxS, ValVar)
+  str-concat("_conf_", IdxS, ConfVar)
+  str-concat("_rhs_", IdxS, RhsVar)
+  str-concat5("    logos_term ", ValVar, "; double ", ConfVar, ";", L1)
+  str-concat8("        if (!logos_graph_lookup(env->graph,\n                logos_walk(env, var_", CVarName, ").s, \"", EField, "\",\n                &", ValVar, ", &", ConfVar, L2Pre)
+  str-concat(L2Pre, ")) return 0;", L2)
+  str-concat4("        logos_term ", RhsVar, " = ", RhsExpr, L3Pre)
+  str-concat(L3Pre, ";", L3)
+  str-concat3("        if (!logos_compare(", ValVar, ", ", L4pre1)
+  str-concat(L4pre1, OpNum, L4pre2)
+  str-concat3(L4pre2, ", ", RhsVar, L4pre3)
+  str-concat(L4pre3, ")) return 0;", L4)
+  str-concat4("        env->confidence = logos_conjoin(env->confidence, ", ConfVar, ");", "", ConfLine)
+  str-concat("    /* cmp-path-var idx=", IdxS, CMT)
+  str-concat(CMT, " */", Comment)
+  equal(Lines, [Comment, "    {", L1, L2, L3, L4, ConfLine, "    }"])
+
+// Case: path (subject.field OP rhs) — constant subject
+emit-cmp(["path", Subj, Field], Op, Rhs, Idx, Lines) if:
+  op-code(Op, OpNum)
+  number-to-str(Idx, IdxS)
+  rhs-term-expr(Rhs, RhsExpr)
+  c-esc(Subj, ESubj)
+  c-esc(Field, EField)
+  str-concat("_val_", IdxS, ValVar)
+  str-concat("_conf_", IdxS, ConfVar)
+  str-concat("_rhs_", IdxS, RhsVar)
+  str-concat5("    logos_term ", ValVar, "; double ", ConfVar, ";", L1)
+  str-concat8("        if (!logos_graph_lookup(env->graph,\n                \"", ESubj, "\", \"", EField, "\",\n                &", ValVar, ", &", ConfVar, L2Pre)
+  str-concat(L2Pre, ")) return 0;", L2)
+  str-concat4("        logos_term ", RhsVar, " = ", RhsExpr, L3Pre)
+  str-concat(L3Pre, ";", L3)
+  str-concat3("        if (!logos_compare(", ValVar, ", ", L4pre1)
+  str-concat(L4pre1, OpNum, L4pre2)
+  str-concat3(L4pre2, ", ", RhsVar, L4pre3)
+  str-concat(L4pre3, ")) return 0;", L4)
+  str-concat4("        env->confidence = logos_conjoin(env->confidence, ", ConfVar, ");", "", ConfLine)
+  equal(Lines, ["    // cmp-path", "    {", L1, L2, L3, L4, ConfLine, "    }"])
+
+// Fallback: direct term comparison
+emit-cmp(Left, Op, Right, Idx, Lines) if:
+  not is-path-var(Left)
+  not is-path(Left)
+  op-code(Op, OpNum)
+  number-to-str(Idx, IdxS)
+  cond-arg-expr(Left, LhsExpr)
+  cond-arg-expr(Right, RhsExpr)
+  str-concat5("    if (!logos_compare(logos_walk(env, ", LhsExpr, "), ", OpNum, ", logos_walk(env, ", L1pre)
+  str-concat(L1pre, RhsExpr, L1pre2)
+  str-concat(L1pre2, "))) return 0;", L1)
+  equal(Lines, ["    // direct cmp", L1])
+
+// ── Path type checks ──────────────────────────────────────────────────────────
+
+is-path-var(["path-var", V, F])
+is-path(["path", S, F])
+
+// ── RHS term expression for comparisons ──────────────────────────────────────
+
+rhs-term-expr(["duration", N, Unit], Expr) if:
+  dur-to-secs(N, Unit, Secs)
+  number-to-float-str(Secs, SecsStr)
+  str-concat3("logos_duration(", SecsStr, ")", Expr)
+
+rhs-term-expr(["id", Name], Expr) if:
+  c-esc(Name, Esc)
+  str-concat3("logos_string(\"", Esc, "\")", Expr)
+
+rhs-term-expr(["var", Name], Expr) if:
+  c-id(Name, CName)
+  str-concat("var_", CName, Expr)
+
+// String tokens include surrounding quotes — strip them before escaping
+rhs-term-expr(S, Expr) if:
+  is-string(S)
+  str-starts-with(S, "\"")
+  strip-quotes(S, Inner)
+  c-esc(Inner, Esc)
+  str-concat3("logos_string(\"", Esc, "\")", Expr)
+
+rhs-term-expr(S, Expr) if:
+  is-string(S)
+  not str-starts-with(S, "\"")
+  c-esc(S, Esc)
+  str-concat3("logos_string(\"", Esc, "\")", Expr)
+
+rhs-term-expr(N, Expr) if:
+  is-number(N)
+  number-to-str(N, NS)
+  str-concat3("logos_float(", NS, ")", Expr)
+
+// ── Primitive call codegen ────────────────────────────────────────────────────
+
+emit-primitive-call(Name, Args, Idx, Lines) if:
+  prim-cfunc(Name, CFunc)
+  cond-args-expr(Args, ArgExpr)
+  str-concat("    /* primitive: ", Name, CMT1)
+  str-concat(CMT1, "(...) */", Comment)
+  str-empty(ArgExpr)
+  str-concat3("    if (!", CFunc, "(env)) return 0;", CallLine)
+  equal(Lines, [Comment, CallLine])
+
+emit-primitive-call(Name, Args, Idx, Lines) if:
+  prim-cfunc(Name, CFunc)
+  cond-args-expr(Args, ArgExpr)
+  str-non-empty(ArgExpr)
+  str-concat("    /* primitive: ", Name, CMT1)
+  str-concat(CMT1, "(...) */", Comment)
+  str-concat3("    if (!", CFunc, "(env, ", CallPre)
+  str-concat(CallPre, ArgExpr, CallPre2)
+  str-concat(CallPre2, ")) return 0;", CallLine)
+  equal(Lines, [Comment, CallLine])
+
+// ── Negation-as-failure codegen ───────────────────────────────────────────────
+
+emit-naf(Name, Args, Idx, Lines) if:
+  c-id(Name, CName)
+  cond-args-expr(Args, ArgExpr)
+  number-to-str(Idx, IdxS)
+  str-concat("    /* not ", Name, CMT1)
+  str-concat(CMT1, "(...) — negation-as-failure */", Comment)
+  str-concat("        int    _naf_found_", IdxS, NafFound)
+  str-concat(NafFound, " = 0;", NafFoundLine)
+  str-concat("        double _naf_conf_", IdxS, NafConf)
+  str-concat(NafConf, "  = 0.0;", NafConfLine)
+  str-concat("        void *_pf_", IdxS, PfVar)
+  str-concat(PfVar, " = env->capture_found;", PfLine)
+  str-concat("        void *_pc_", IdxS, PcVar)
+  str-concat(PcVar, " = env->capture_conf;", PcLine)
+  str-concat("        logos_mark_t _nm_", IdxS, NmVar)
+  str-concat(NmVar, " = logos_mark(env);", NmLine)
+  str-concat("        env->capture_found = &_naf_found_", IdxS, SetFound)
+  str-concat(SetFound, ";", SetFoundLine)
+  str-concat("        env->capture_conf  = &_naf_conf_", IdxS, SetConf)
+  str-concat(SetConf, ";", SetConfLine)
+  naf-call-line(CName, ArgExpr, CallLine)
+  str-concat("        logos_undo(env, _nm_", IdxS, UndoLine1)
+  str-concat(UndoLine1, ");", UndoLine)
+  str-concat("        env->capture_found = _pf_", IdxS, RestoreFound)
+  str-concat(RestoreFound, ";", RestoreFoundLine)
+  str-concat("        env->capture_conf  = _pc_", IdxS, RestoreConf)
+  str-concat(RestoreConf, ";", RestoreConfLine)
+  str-concat("        if (_naf_found_", IdxS, NafCheck)
+  str-concat(NafCheck, ") return 0;  /* NAF: fail if proved */", NafCheckLine)
+  equal(Lines, [Comment, "    {", NafFoundLine, NafConfLine, PfLine, PcLine, NmLine, SetFoundLine, SetConfLine, CallLine, UndoLine, RestoreFoundLine, RestoreConfLine, NafCheckLine, "    }"])
+
+naf-call-line(CName, "", CallLine) if:
+  str-concat3("        pred_", CName, "(env, k_bool_capture);", CallLine)
+
+naf-call-line(CName, ArgExpr, CallLine) if:
+  str-non-empty(ArgExpr)
+  str-concat3("        pred_", CName, "(env, ", CP1)
+  str-concat(CP1, ArgExpr, CP2)
+  str-concat(CP2, ", k_bool_capture);", CallLine)
+
+// ── User-defined predicate call as inline condition ───────────────────────────
+
+emit-pred-call-cond(Name, Args, Idx, Lines) if:
+  c-id(Name, CName)
+  cond-args-expr(Args, ArgExpr)
+  number-to-str(Idx, IdxS)
+  str-concat("    /* condition: ", Name, CMT1)
+  str-concat(CMT1, "(...) */", Comment)
+  str-concat("        int    _pc_found_", IdxS, PcFound)
+  str-concat(PcFound, " = 0;", PcFoundLine)
+  str-concat("        double _pc_conf_", IdxS, PcConf)
+  str-concat(PcConf, "  = 0.0;", PcConfLine)
+  str-concat("        void *_pf_", IdxS, PfVar)
+  str-concat(PfVar, " = env->capture_found;", PfLine)
+  str-concat("        void *_pc_", IdxS, PcVar)
+  str-concat(PcVar, " = env->capture_conf;", PcLine)
+  str-concat("        logos_mark_t _pm_", IdxS, PmVar)
+  str-concat(PmVar, " = logos_mark(env);", PmLine)
+  str-concat("        env->capture_found = &_pc_found_", IdxS, SetFound)
+  str-concat(SetFound, ";", SetFoundLine)
+  str-concat("        env->capture_conf  = &_pc_conf_", IdxS, SetConf)
+  str-concat(SetConf, ";", SetConfLine)
+  pred-cond-call-line(CName, ArgExpr, IdxS, CallLine)
+  str-concat("        logos_undo(env, _pm_", IdxS, UndoLine1)
+  str-concat(UndoLine1, ");", UndoLine)
+  str-concat("        env->capture_found = _pf_", IdxS, RestoreFound)
+  str-concat(RestoreFound, ";", RestoreFoundLine)
+  str-concat("        env->capture_conf  = _pc_", IdxS, RestoreConf)
+  str-concat(RestoreConf, ";", RestoreConfLine)
+  str-concat("        if (!_pc_found_", IdxS, CheckLine1)
+  str-concat(CheckLine1, ") return 0;", CheckLine)
+  str-concat("        env->confidence = logos_conjoin(env->confidence, _pc_conf_", IdxS, ConjLine1)
+  str-concat(ConjLine1, ");", ConjLine)
+  equal(Lines, [Comment, "    {", PcFoundLine, PcConfLine, PfLine, PcLine, PmLine, SetFoundLine, SetConfLine, CallLine, UndoLine, RestoreFoundLine, RestoreConfLine, CheckLine, ConjLine, "    }"])
+
+pred-cond-call-line(CName, "", IdxS, CallLine) if:
+  str-concat5("        pred_", CName, "(env, k_bool_capture);", "", "", CallLine)
+
+pred-cond-call-line(CName, ArgExpr, IdxS, CallLine) if:
+  str-non-empty(ArgExpr)
+  str-concat4("        pred_", CName, "(env, ", ArgExpr, CP1)
+  str-concat(CP1, ", k_bool_capture);", CallLine)
+
+// ── Single condition codegen ──────────────────────────────────────────────────
+
+emit-cond(["cmp", Left, Op, Right], Idx, Lines) if:
+  emit-cmp(Left, Op, Right, Idx, Lines)
+
+emit-cond(["call", Name, Args], Idx, Lines) if:
+  is-primitive(Name)
+  emit-primitive-call(Name, Args, Idx, Lines)
+
+emit-cond(["call", Name, Args], Idx, Lines) if:
+  not is-primitive(Name)
+  emit-pred-call-cond(Name, Args, Idx, Lines)
+
+emit-cond(["not-call", Name, Args], Idx, Lines) if:
+  is-primitive(Name)
+  emit-negated-primitive(Name, Args, Idx, Lines)
+
+emit-cond(["not-call", Name, Args], Idx, Lines) if:
+  not is-primitive(Name)
+  emit-naf(Name, Args, Idx, Lines)
+
+// ── Negated primitive ─────────────────────────────────────────────────────────
+
+emit-negated-primitive(Name, Args, Idx, Lines) if:
+  prim-cfunc(Name, CFunc)
+  cond-args-expr(Args, ArgExpr)
+  number-to-str(Idx, IdxS)
+  str-concat("    /* not ", Name, CMT1)
+  str-concat(CMT1, "(...) — primitive NAF */", Comment)
+  str-concat("        logos_mark_t _pnaf_", IdxS, PnafVar)
+  str-concat(PnafVar, " = logos_mark(env);", PnafLine)
+  prim-naf-call(CFunc, ArgExpr, IdxS, OkLine)
+  str-concat("        logos_undo(env, _pnaf_", IdxS, UndoLine1)
+  str-concat(UndoLine1, ");", UndoLine)
+  str-concat("        if (_pnaf_ok_", IdxS, CheckLine1)
+  str-concat(CheckLine1, ") return 0;", CheckLine)
+  equal(Lines, [Comment, "    {", PnafLine, OkLine, UndoLine, CheckLine, "    }"])
+
+prim-naf-call(CFunc, "", IdxS, Line) if:
+  str-concat("        int _pnaf_ok_", IdxS, Pfx)
+  str-concat(Pfx, " = ", Pfx2)
+  str-concat(Pfx2, CFunc, Pfx3)
+  str-concat(Pfx3, "(env);", Line)
+
+prim-naf-call(CFunc, ArgExpr, IdxS, Line) if:
+  str-non-empty(ArgExpr)
+  str-concat("        int _pnaf_ok_", IdxS, Pfx)
+  str-concat(Pfx, " = ", Pfx2)
+  str-concat(Pfx2, CFunc, Pfx3)
+  str-concat(Pfx3, "(env, ", Pfx4)
+  str-concat(Pfx4, ArgExpr, Pfx5)
+  str-concat(Pfx5, ");", Line)
+
+// ── Condition list codegen ────────────────────────────────────────────────────
+
+// emit-conds(Conds, StartIdx, Lines)
+emit-conds([], Idx, [])
+
+emit-conds(Conds, Idx, Lines) if:
+  list-cons(Cond, Rest, Conds)
+  emit-cond(Cond, Idx, CondLines)
+  num-add(Idx, 1.0, NextIdx)
+  emit-conds(Rest, NextIdx, RestLines)
+  list-append(CondLines, RestLines, Lines)
+
+// ── Collect body variables from conditions ────────────────────────────────────
+
+collect-cond-vars([], Vars, Vars)
+
+collect-cond-vars(Conds, Acc, Vars) if:
+  list-cons(Cond, Rest, Conds)
+  cond-vars(Cond, CVars)
+  merge-vars(CVars, Acc, NewAcc)
+  collect-cond-vars(Rest, NewAcc, Vars)
+
+cond-vars(["cmp", Left, Op, Right], Vars) if:
+  term-vars(Left, LV)
+  term-vars(Right, RV)
+  list-append(LV, RV, Vars)
+
+cond-vars(["call", Name, Args], Vars) if:
+  args-vars(Args, Vars)
+
+cond-vars(["not-call", Name, Args], Vars) if:
+  args-vars(Args, Vars)
+
+args-vars([], [])
+
+args-vars(Args, Vars) if:
+  list-cons(Arg, Rest, Args)
+  term-vars(Arg, AV)
+  args-vars(Rest, RV)
+  list-append(AV, RV, Vars)
+
+term-vars(["var", Name], [Name])
+term-vars(["id", N], [])
+term-vars(["path", S, F], [])
+term-vars(["path-var", V, F], [V])
+term-vars(["duration", N, U], [])
+term-vars(["list-pat", Elems], Vars) if:
+  list-pat-term-vars(Elems, Vars)
+term-vars(S, []) if:
+  is-string(S)
+
+term-vars(N, []) if:
+  is-number(N)
+
+list-pat-term-vars([], [])
+
+list-pat-term-vars(Elems, Vars) if:
+  list-cons(Head, Tail, Elems)
+  term-vars(Head, HV)
+  list-pat-term-vars(Tail, TV)
+  list-append(HV, TV, Vars)
+
+// merge-vars(New, Existing, Result) — add vars not already in Existing
+merge-vars([], Acc, Acc)
+
+merge-vars(New, Acc, Result) if:
+  list-cons(V, Rest, New)
+  list-member(V, Acc)
+  merge-vars(Rest, Acc, Result)
+
+merge-vars(New, Acc, Result) if:
+  list-cons(V, Rest, New)
+  not list-member(V, Acc)
+  list-cons(V, Acc, NewAcc)
+  merge-vars(Rest, NewAcc, Result)
+
+// ── Head vars ─────────────────────────────────────────────────────────────────
+
+// head-vars(HeadArgs, VarNames) — extract variable names from head args
+head-vars([], [])
+
+head-vars(HeadArgs, Vars) if:
+  list-cons(Arg, Rest, HeadArgs)
+  head-arg-var(Arg, MaybeVar)
+  head-vars(Rest, RestVars)
+  list-append(MaybeVar, RestVars, Vars)
+
+head-arg-var(["var", Name], [Name])
+head-arg-var(["id", N], [])
+head-arg-var(N, []) if:
+  is-number(N)
+
+head-arg-var(S, []) if:
+  is-string(S)
+
+head-arg-var(["list-pat", Elems], Vars) if:
+  list-pat-all-vars(Elems, Vars)
+
+list-pat-all-vars([], [])
+
+list-pat-all-vars(Elems, Vars) if:
+  list-cons(E, Rest, Elems)
+  head-arg-var(E, EVars)
+  list-pat-all-vars(Rest, RestVars)
+  list-append(EVars, RestVars, Vars)
+
+// ── Head arg unification lines (for constant head args) ──────────────────────
+
+// Compute direct (non-list-pat) var names from head args
+head-direct-vars([], [])
+
+head-direct-vars(Args, Names) if:
+  list-cons(A, Rest, Args)
+  head-direct-one-var(A, V)
+  head-direct-vars(Rest, RestNames)
+  list-append(V, RestNames, Names)
+
+head-direct-one-var(["var", Name], [Name])
+head-direct-one-var(["id", N], [])
+head-direct-one-var(["list-pat", E], [])
+head-direct-one-var(N, []) if:
+  is-number(N)
+
+head-direct-one-var(S, []) if:
+  is-string(S)
+
+// head-unify-lines(HeadArgs, Lines) — emit duplicate-var unification + pattern matching
+head-unify-lines(HeadArgs, Lines) if:
+  head-direct-vars(HeadArgs, KnownVars)
+  head-dup-unify-lines(HeadArgs, DupLines)
+  head-unify-lines-acc(HeadArgs, 0.0, KnownVars, [], PatLines)
+  list-append(DupLines, PatLines, Lines)
+
+// head-dup-unify-lines: emit logos_unify for duplicate variable head args
+head-dup-unify-lines(HeadArgs, Lines) if:
+  head-dup-unify-acc(HeadArgs, 0.0, [], [], Lines)
+
+head-dup-unify-acc([], Pos, Seen, Acc, Acc)
+
+// ["var", Name] first occurrence — no action
+head-dup-unify-acc(HeadArgs, Pos, Seen, Acc, Result) if:
+  list-cons(Arg, Rest, HeadArgs)
+  equal(Arg, ["var", VarName])
+  c-id(VarName, BaseName)
+  not list-member(BaseName, Seen)
+  list-cons(BaseName, Seen, NewSeen)
+  num-add(Pos, 1.0, NextPos)
+  head-dup-unify-acc(Rest, NextPos, NewSeen, Acc, Result)
+
+// ["var", Name] duplicate — emit logos_unify
+head-dup-unify-acc(HeadArgs, Pos, Seen, Acc, Result) if:
+  list-cons(Arg, Rest, HeadArgs)
+  equal(Arg, ["var", VarName])
+  c-id(VarName, BaseName)
+  list-member(BaseName, Seen)
+  number-to-str(Pos, PosStr)
+  str-concat(BaseName, "_", Tmp)
+  str-concat(Tmp, PosStr, UniqName)
+  str-concat("    if (!logos_unify(env, var_", BaseName, L1)
+  str-concat(L1, ", var_", L2)
+  str-concat(L2, UniqName, L3)
+  str-concat(L3, ")) return 0;", Line)
+  list-append(Acc, [Line], NewAcc)
+  list-cons(UniqName, Seen, NewSeen)
+  num-add(Pos, 1.0, NextPos)
+  head-dup-unify-acc(Rest, NextPos, NewSeen, NewAcc, Result)
+
+// non-var arg (id, list-pat, number, string) — skip
+head-dup-unify-acc(HeadArgs, Pos, Seen, Acc, Result) if:
+  list-cons(Arg, Rest, HeadArgs)
+  head-arg-not-var(Arg)
+  num-add(Pos, 1.0, NextPos)
+  head-dup-unify-acc(Rest, NextPos, Seen, Acc, Result)
+
+head-arg-not-var(["id", N])
+head-arg-not-var(["list-pat", E])
+head-arg-not-var(N) if:
+  is-number(N)
+head-arg-not-var(S) if:
+  is-string(S)
+
+head-unify-lines-acc([], Pos, KV, Acc, Result) if:
+  equal(Result, Acc)
+
+head-unify-lines-acc(HeadArgs, Pos, KV, Acc, Result) if:
+  list-cons(Arg, Rest, HeadArgs)
+  head-arg-cname(Arg, Pos, CName)
+  head-unify-line(Arg, CName, KV, Lines)
+  // Extend KV with any new vars allocated by this arg's list-pat (so subsequent args don't re-allocate)
+  head-arg-new-vars(Arg, KV, NewVars)
+  list-append(KV, NewVars, NewKV)
+  list-append(Acc, Lines, NewAcc)
+  num-add(Pos, 1.0, NextPos)
+  head-unify-lines-acc(Rest, NextPos, NewKV, NewAcc, Result)
+
+// head-arg-new-vars(Arg, KV, NewVars) — vars newly allocated by processing Arg
+head-arg-new-vars(["list-pat", Elems], KV, NewVars) if:
+  list-pat-term-vars(Elems, PatVars)
+  body-only-vars(PatVars, KV, NewVars)
+
+head-arg-new-vars(["var", Name], KV, [])
+head-arg-new-vars(["id", N], KV, [])
+
+head-arg-new-vars(N, KV, []) if:
+  is-number(N)
+
+head-arg-new-vars(S, KV, []) if:
+  is-string(S)
+
+// head-unify-line(Arg, CName, KnownVars, Lines)
+head-unify-line(["var", Name], CName, KV, [])
+head-unify-line(["id", Name], CName, KV, [Line]) if:
+  c-esc(Name, Esc)
+  str-concat3("    if (!logos_unify(env, var_", CName, ", logos_string(\"", LP)
+  str-concat(LP, Esc, LP2)
+  str-concat(LP2, "\"))) return 0;", Line)
+head-unify-line(N, CName, KV, [Line]) if:
+  is-number(N)
+  number-to-float-str(N, NS)
+  str-concat3("    if (!logos_unify(env, var_", CName, ", logos_float(", LP)
+  str-concat(LP, NS, LP2)
+  str-concat(LP2, "))) return 0;", Line)
+head-unify-line(S, CName, KV, [Line]) if:
+  is-string(S)
+  strip-quotes(S, Inner)
+  c-esc(Inner, Esc)
+  str-concat3("    if (!logos_unify(env, var_", CName, ", logos_string(\"", LP)
+  str-concat(LP, Esc, LP2)
+  str-concat(LP2, "\"))) return 0;", Line)
+
+// List pattern: allocate new pattern vars, then construct list and unify.
+// Uses logos_list_cons to build the expected list and logos_unify to bind/check the param.
+// This works for both input positions (param is bound) and output positions (param is unbound).
+head-unify-line(["list-pat", Elems], CName, KV, Lines) if:
+  list-pat-term-vars(Elems, PatVars)
+  pat-new-var-allocs(PatVars, KV, AllocLines)
+  list-build-expr(Elems, ListExpr)
+  str-concat3("    if (!logos_unify(env, var_", CName, ", ", UL1)
+  str-concat(UL1, ListExpr, UL2)
+  str-concat(UL2, ")) return 0;", UnifyLine)
+  list-append(AllocLines, [UnifyLine], Lines)
+
+// list-build-expr(Elems, Expr) — build logos_list_cons(...) C expression inline
+list-build-expr([], "logos_nil()")
+
+list-build-expr(Elems, Expr) if:
+  list-cons(Elem, Rest, Elems)
+  list-pat-elem-cexpr(Elem, ElemExpr)
+  list-build-expr(Rest, RestExpr)
+  str-concat3("logos_list_cons(", ElemExpr, ", ", L1)
+  str-concat(L1, RestExpr, L2)
+  str-concat(L2, ")", Expr)
+
+// list-pat-elem-cexpr(Elem, Expr) — C expression for a single list-pat element
+list-pat-elem-cexpr(["id", Name], Expr) if:
+  c-esc(Name, Esc)
+  str-concat3("logos_string(\"", Esc, "\")", Expr)
+
+list-pat-elem-cexpr(["var", Name], Expr) if:
+  c-id(Name, CN)
+  str-concat("var_", CN, Expr)
+
+list-pat-elem-cexpr(N, Expr) if:
+  is-number(N)
+  number-to-float-str(N, NS)
+  str-concat3("logos_float(", NS, ")", Expr)
+
+// String tokens include surrounding quotes — strip them before escaping
+list-pat-elem-cexpr(S, Expr) if:
+  is-string(S)
+  str-starts-with(S, "\"")
+  strip-quotes(S, Inner)
+  c-esc(Inner, Esc)
+  str-concat3("logos_string(\"", Esc, "\")", Expr)
+
+list-pat-elem-cexpr(S, Expr) if:
+  is-string(S)
+  not str-starts-with(S, "\"")
+  c-esc(S, Esc)
+  str-concat3("logos_string(\"", Esc, "\")", Expr)
+
+list-pat-elem-cexpr(["list-pat", SubElems], Expr) if:
+  list-build-expr(SubElems, Expr)
+
+// pat-new-var-allocs(PatVars, KnownVars, AllocLines)
+// Allocate pattern vars that are NOT already in KV (direct function params).
+pat-new-var-allocs([], KV, [])
+
+// Already a direct param — skip alloc
+pat-new-var-allocs(Vars, KV, Lines) if:
+  list-cons(V, Rest, Vars)
+  list-member(V, KV)
+  pat-new-var-allocs(Rest, KV, Lines)
+
+// New var — allocate
+pat-new-var-allocs(Vars, KV, Lines) if:
+  list-cons(V, Rest, Vars)
+  not list-member(V, KV)
+  c-id(V, CN)
+  str-concat3("    logos_term var_", CN, " = logos_alloc_var(env);", AllocLine)
+  pat-new-var-allocs(Rest, KV, RestLines)
+  list-cons(AllocLine, RestLines, Lines)
+
+// emit-list-walk-lines(Elems, CurVar, KnownVars, Idx, Lines, NextIdx)
+// Emits: for each element, check it's a list node, handle the element, advance cursor
+emit-list-walk-lines([], CurVar, KV, Idx, [], Idx)
+
+emit-list-walk-lines(Elems, CurVar, KV, Idx, Lines, NextIdx) if:
+  list-cons(Elem, Rest, Elems)
+  str-concat3("    if (!logos_is_list(", CurVar, ")) return 0;", CheckLine)
+  emit-list-elem-lines(Elem, CurVar, KV, Idx, ElemLines, NextIdx2)
+  str-concat3("    ", CurVar, " = logos_walk(env, ", AdvL1)
+  str-concat(AdvL1, CurVar, AdvL2)
+  str-concat(AdvL2, ".cons->tail);", AdvLine)
+  emit-list-walk-lines(Rest, CurVar, KV, NextIdx2, RestLines, NextIdx)
+  list-cons(CheckLine, ElemLines, EL)
+  list-append(EL, [AdvLine], ELAdv)
+  list-append(ELAdv, RestLines, Lines)
+
+// emit-list-elem-lines(Elem, CurVar, KnownVars, Idx, Lines, NextIdx)
+emit-list-elem-lines(["var", Name], CurVar, KV, Idx, Lines, Idx) if:
+  list-member(Name, KV)
+  c-id(Name, CN)
+  str-concat3("    if (!logos_unify(env, var_", CN, ", ", L1)
+  str-concat(L1, CurVar, L2)
+  str-concat(L2, ".cons->head)) return 0;", UnifyLine)
+  equal(Lines, [UnifyLine])
+
+emit-list-elem-lines(["var", Name], CurVar, KV, Idx, Lines, Idx) if:
+  not list-member(Name, KV)
+  c-id(Name, CN)
+  str-concat3("    logos_term var_", CN, " = logos_alloc_var(env);", AllocLine)
+  str-concat3("    if (!logos_unify(env, var_", CN, ", ", L1)
+  str-concat(L1, CurVar, L2)
+  str-concat(L2, ".cons->head)) return 0;", UnifyLine)
+  equal(Lines, [AllocLine, UnifyLine])
+
+emit-list-elem-lines(["id", Name], CurVar, KV, Idx, [Line], Idx) if:
+  c-esc(Name, Esc)
+  str-concat3("    if (!logos_unify(env, ", CurVar, ".cons->head, logos_string(\"", L1)
+  str-concat(L1, Esc, L2)
+  str-concat(L2, "\"))) return 0;", Line)
+
+emit-list-elem-lines(N, CurVar, KV, Idx, [Line], Idx) if:
+  is-number(N)
+  number-to-float-str(N, NS)
+  str-concat3("    if (!logos_unify(env, ", CurVar, ".cons->head, logos_float(", L1)
+  str-concat(L1, NS, L2)
+  str-concat(L2, "))) return 0;", Line)
+
+emit-list-elem-lines(S, CurVar, KV, Idx, [Line], Idx) if:
+  is-string(S)
+  c-esc(S, Esc)
+  str-concat3("    if (!logos_unify(env, ", CurVar, ".cons->head, logos_string(\"", L1)
+  str-concat(L1, Esc, L2)
+  str-concat(L2, "\"))) return 0;", Line)
+
+emit-list-elem-lines(["list-pat", SubElems], CurVar, KV, Idx, Lines, NextIdx) if:
+  number-to-c(Idx, IdxStr)
+  str-concat3("_sub_", IdxStr, "_", SubPre)
+  str-concat(SubPre, CurVar, SubCurVar)
+  str-concat3("    logos_term ", SubCurVar, " = logos_walk(env, ", SL1)
+  str-concat(SL1, CurVar, SL2)
+  str-concat(SL2, ".cons->head);", SubOpenLine)
+  num-add(Idx, 1.0, Idx2)
+  emit-list-walk-lines(SubElems, SubCurVar, KV, Idx2, SubWalkLines, NextIdx)
+  str-concat3("    if (!logos_is_nil(", SubCurVar, ")) return 0;", SubNilLine)
+  list-cons(SubOpenLine, SubWalkLines, Tmp)
+  list-append(Tmp, [SubNilLine], Lines)
+
+// ── Simple rule emission ──────────────────────────────────────────────────────
+
+// emit-simple-rule(PredName, Idx, HeadArgs, Conds, Lines)
+emit-simple-rule(PredName, Idx, HeadArgs, Conds, Lines) if:
+  c-id(PredName, CName)
+  number-to-str(Idx, IdxS)
+  head-params-decl(HeadArgs, ParamStr)
+  head-vars(HeadArgs, HVarsRaw)
+  merge-vars(HVarsRaw, [], HVars)
+  collect-cond-vars(Conds, [], AllCondVars)
+  body-only-vars(AllCondVars, HVars, BodyVars)
+  str-concat4("static int rule_", CName, "_", IdxS, SigPre)
+  simple-rule-sig(SigPre, ParamStr, Sig)
+  body-var-decl-lines(BodyVars, VarDeclLines)
+  head-unify-lines(HeadArgs, UnifyLines)
+  emit-conds(Conds, 0.0, CondLines)
+  list-append(UnifyLines, CondLines, AfterUnify)
+  list-append(VarDeclLines, AfterUnify, BodyLines)
+  equal(DegradeLine, "    env->confidence = logos_degrade(env->confidence);")
+  equal(RetLine, "    return k(env);")
+  equal(Close, "}")
+  equal(Blank, "")
+  list-cons(Sig, BodyLines, L1)
+  list-append(L1, [DegradeLine, RetLine, Close, Blank], Lines)
+
+simple-rule-sig(SigPre, "", Sig) if:
+  str-concat(SigPre, "(logos_env *env, logos_cont k) {", Sig)
+
+simple-rule-sig(SigPre, ParamStr, Sig) if:
+  str-non-empty(ParamStr)
+  str-concat3(SigPre, "(logos_env *env, ", ParamStr, SP1)
+  str-concat(SP1, ", logos_cont k) {", Sig)
+
+// body-only-vars(AllVars, HeadVars, BodyOnlyVars)
+body-only-vars([], HVars, [])
+
+body-only-vars(AllVars, HVars, Result) if:
+  list-cons(V, Rest, AllVars)
+  list-member(V, HVars)
+  body-only-vars(Rest, HVars, Result)
+
+body-only-vars(AllVars, HVars, Result) if:
+  list-cons(V, Rest, AllVars)
+  not list-member(V, HVars)
+  body-only-vars(Rest, HVars, RestResult)
+  list-cons(V, RestResult, Result)
+
+// body-var-decl-lines(BodyVars, Lines)
+body-var-decl-lines([], [])
+
+body-var-decl-lines(BodyVars, Lines) if:
+  list-cons(V, Rest, BodyVars)
+  c-id(V, CV)
+  str-concat3("    logos_term var_", CV, " = logos_alloc_var(env);", Line)
+  body-var-decl-lines(Rest, RestLines)
+  list-cons(Line, RestLines, Lines)
+
+// ── Find split positions (indices of user-defined pred calls) ─────────────────
+
+// split-positions(Conds, Positions) — 0-indexed positions of non-primitive calls
+split-positions(Conds, Positions) if:
+  split-positions-acc(Conds, 0.0, Positions)
+
+split-positions-acc([], Idx, [])
+
+split-positions-acc(Conds, Idx, Positions) if:
+  list-cons(Cond, Rest, Conds)
+  is-split-cond(Cond)
+  num-add(Idx, 1.0, NextIdx)
+  split-positions-acc(Rest, NextIdx, RestPos)
+  list-cons(Idx, RestPos, Positions)
+
+split-positions-acc(Conds, Idx, Positions) if:
+  list-cons(Cond, Rest, Conds)
+  not is-split-cond(Cond)
+  num-add(Idx, 1.0, NextIdx)
+  split-positions-acc(Rest, NextIdx, Positions)
+
+is-split-cond(["call", Name, Args]) if:
+  not is-primitive(Name)
+
+// ── CPS rule emission ─────────────────────────────────────────────────────────
+
+// emit-cps-rule(PredName, RuleIdx, HeadArgs, Conds, AllVars, SplitPositions, Lines)
+emit-cps-rule(PredName, RuleIdx, HeadArgs, Conds, Lines) if:
+  c-id(PredName, CName)
+  number-to-str(RuleIdx, RuleIdxS)
+  head-vars(HeadArgs, HVarsRaw)
+  merge-vars(HVarsRaw, [], HVars)
+  collect-cond-vars(Conds, [], AllCondVars)
+  body-only-vars(AllCondVars, HVars, BodyVars)
+  list-append(HVars, BodyVars, AllVars)
+  split-positions(Conds, SplitPos)
+  // Context typedef
+  emit-ctx-typedef(CName, RuleIdxS, AllVars, CtxLines)
+  // Continuation functions (last split first)
+  list-reverse(SplitPos, RevSplitPos)
+  emit-cont-funcs(CName, RuleIdxS, AllVars, SplitPos, Conds, RevSplitPos, ContLines)
+  // Rule function body
+  emit-cps-rule-func(CName, RuleIdxS, HeadArgs, Conds, AllVars, SplitPos, BodyVars, RuleFuncLines)
+  list-append(CtxLines, ContLines, T1)
+  list-append(T1, RuleFuncLines, Lines)
+
+// ── Context typedef ───────────────────────────────────────────────────────────
+
+emit-ctx-typedef(CName, RuleIdxS, AllVars, Lines) if:
+  ctx-typedef-lines(AllVars, CName, RuleIdxS, Lines)
+
+ctx-typedef-lines(AllVars, CName, RuleIdxS, Lines) if:
+  ctx-var-decl-strs(AllVars, VarStrs)
+  str-concat4("_ctx_", CName, "_", RuleIdxS, CtxName)
+  str-concat("typedef struct {\n", "", HdrBase)
+  str-join(VarStrs, "\n", VarsJoined)
+  str-concat(HdrBase, VarsJoined, HdrFull)
+  str-concat(HdrFull, "\n    logos_cont k;\n    void *prev_ctx;\n} ", HdrFull2)
+  str-concat(HdrFull2, CtxName, HdrFull3)
+  str-concat(HdrFull3, "_t;", TypedefLine)
+  equal(Lines, [TypedefLine, ""])
+
+ctx-var-decl-strs([], [])
+
+ctx-var-decl-strs(AllVars, Strs) if:
+  list-cons(V, Rest, AllVars)
+  c-id(V, CV)
+  str-concat3("    logos_term var_", CV, ";", Str)
+  ctx-var-decl-strs(Rest, RestStrs)
+  list-cons(Str, RestStrs, Strs)
+
+// ── Continuation functions (emitted last-to-first, accumulator style) ────────
+
+emit-cont-funcs(CName, RuleIdxS, AllVars, SplitPos, Conds, RevSplitPos, ContLines) if:
+  emit-cont-funcs-acc(CName, RuleIdxS, AllVars, SplitPos, Conds, RevSplitPos, [], ContLines)
+
+emit-cont-funcs-acc(CName, RuleIdxS, AllVars, SplitPos, Conds, [], Acc, Acc)
+
+emit-cont-funcs-acc(CName, RuleIdxS, AllVars, SplitPos, Conds, RevSplitPos, Acc, ContLines) if:
+  list-cons(Sp, RestRev, RevSplitPos)
+  emit-one-cont-func(CName, RuleIdxS, AllVars, SplitPos, Conds, Sp, OneFuncLines)
+  list-append(Acc, OneFuncLines, NewAcc)
+  emit-cont-funcs-acc(CName, RuleIdxS, AllVars, SplitPos, Conds, RestRev, NewAcc, ContLines)
+
+// emit-one-cont-func: the continuation function for split position Sp
+emit-one-cont-func(CName, RuleIdxS, AllVars, SplitPos, Conds, Sp, Lines) if:
+  number-to-str(Sp, SpS)
+  str-concat4("_ctx_", CName, "_", RuleIdxS, CtxName)
+  str-concat6("static int _cont_", CName, "_", RuleIdxS, "_", SpS, FuncName)
+  str-concat(FuncName, "(logos_env *env) {", Sig)
+  str-concat(CtxName, "_t *_ctx = (", CtxCast1)
+  str-concat(CtxCast1, CtxName, CtxCast2)
+  str-concat(CtxCast2, "_t *)env->cont_ctx;", CastLine)
+  cont-var-restore-lines(AllVars, RestoreLines)
+  equal(KLine, "    logos_cont k = _ctx->k;")
+  equal(PrevCtxLine, "    void *_prev_ctx = _ctx->prev_ctx; env->cont_ctx = _prev_ctx; /* caller frees */")
+  // Conditions after Sp and up to next split (or end)
+  num-add(Sp, 1.0, AfterSp)
+  next-split-after(SplitPos, Sp, NextSp)
+  conds-slice(Conds, AfterSp, NextSp, SliceConds)
+  emit-conds-at(SliceConds, AfterSp, CondLines)
+  // If no next split: degrade + k(env)
+  cont-func-tail(CName, RuleIdxS, AllVars, SplitPos, Conds, Sp, NextSp, TailLines)
+  list-append([Sig, CastLine], RestoreLines, L1)
+  list-append(L1, [KLine, PrevCtxLine], L2)
+  list-append(L2, CondLines, L3)
+  list-append(L3, TailLines, L4)
+  list-append(L4, ["}", ""], Lines)
+
+cont-var-restore-lines([], [])
+
+cont-var-restore-lines(AllVars, Lines) if:
+  list-cons(V, Rest, AllVars)
+  c-id(V, CV)
+  str-concat3("    logos_term var_", CV, " = _ctx->var_", CVL)
+  str-concat(CVL, CV, CVL2)
+  str-concat(CVL2, ";", Line)
+  cont-var-restore-lines(Rest, RestLines)
+  list-cons(Line, RestLines, Lines)
+
+// next-split-after(SplitPos, CurrentSp, NextSp) — -1.0 means "no next"
+next-split-after([], Sp, -1.0)
+
+next-split-after(SplitPos, Sp, NextSp) if:
+  list-cons(P, Rest, SplitPos)
+  num-sub(P, Sp, Diff)
+  Diff > 0.0
+  equal(NextSp, P)
+
+next-split-after(SplitPos, Sp, NextSp) if:
+  list-cons(P, Rest, SplitPos)
+  P <= Sp
+  next-split-after(Rest, Sp, NextSp)
+
+// conds-slice(Conds, From, To, Slice) — get conditions at indices [From, To)
+// To = -1.0 means "to end"
+conds-slice(Conds, From, To, Slice) if:
+  conds-slice-acc(Conds, 0.0, From, To, Slice)
+
+conds-slice-acc([], Idx, From, To, [])
+
+conds-slice-acc(Conds, Idx, From, To, Slice) if:
+  list-cons(Cond, Rest, Conds)
+  Idx >= From
+  equal(To, -1.0)
+  num-add(Idx, 1.0, NextIdx)
+  conds-slice-acc(Rest, NextIdx, From, To, RestSlice)
+  list-cons(Cond, RestSlice, Slice)
+
+conds-slice-acc(Conds, Idx, From, To, Slice) if:
+  list-cons(Cond, Rest, Conds)
+  Idx >= From
+  not equal(To, -1.0)
+  Idx < To
+  num-add(Idx, 1.0, NextIdx)
+  conds-slice-acc(Rest, NextIdx, From, To, RestSlice)
+  list-cons(Cond, RestSlice, Slice)
+
+conds-slice-acc(Conds, Idx, From, To, Slice) if:
+  list-cons(Cond, Rest, Conds)
+  Idx < From
+  num-add(Idx, 1.0, NextIdx)
+  conds-slice-acc(Rest, NextIdx, From, To, Slice)
+
+conds-slice-acc(Conds, Idx, From, To, []) if:
+  list-cons(Cond, Rest, Conds)
+  not equal(To, -1.0)
+  Idx >= To
+
+// emit-conds-at: emit conditions at specific starting index
+emit-conds-at([], StartIdx, [])
+
+emit-conds-at(Conds, StartIdx, Lines) if:
+  list-cons(Cond, Rest, Conds)
+  emit-cond(Cond, StartIdx, CondLines)
+  num-add(StartIdx, 1.0, NextIdx)
+  emit-conds-at(Rest, NextIdx, RestLines)
+  list-append(CondLines, RestLines, Lines)
+
+// cont-func-tail: what goes at the end of the continuation function
+cont-func-tail(CName, RuleIdxS, AllVars, SplitPos, Conds, Sp, -1.0, Lines) if:
+  equal(Lines, ["    env->confidence = logos_degrade(env->confidence);", "    return k(env);"])
+
+cont-func-tail(CName, RuleIdxS, AllVars, SplitPos, Conds, Sp, NextSp, Lines) if:
+  not equal(NextSp, -1.0)
+  number-to-str(NextSp, NextSpS)
+  str-concat4("_ctx_", CName, "_", RuleIdxS, CtxName)
+  str-concat6("_cont_", CName, "_", RuleIdxS, "_", NextSpS, ContFuncName)
+  // Get the condition at NextSp
+  list-nth(Conds, NextSp, SplitCond)
+  emit-cps-split-at(CtxName, AllVars, SplitCond, NextSp, ContFuncName, SplitLines)
+  equal(Lines, SplitLines)
+
+// ── CPS split emission ────────────────────────────────────────────────────────
+
+emit-cps-split-at(CtxName, AllVars, ["call", Name, Args], SpIdx, ContFuncName, Lines) if:
+  c-id(Name, CName)
+  cond-args-expr(Args, ArgExpr)
+  number-to-str(SpIdx, SpIdxS)
+  str-concat("    /* CPS: ", Name, CMT1)
+  str-concat(CMT1, "(...) */", Comment)
+  cps-split-ctx-init(CtxName, AllVars, SpIdxS, CtxInitLine)
+  str-concat("        env->cont_ctx = _ctx_", SpIdxS, SetCtxLine1)
+  str-concat(SetCtxLine1, ";", SetCtxLine)
+  cps-call-line(CName, ArgExpr, SpIdxS, ContFuncName, CallLine)
+  str-concat("        env->cont_ctx = _ctx_", SpIdxS, RestCtxLine1)
+  str-concat(RestCtxLine1, "->prev_ctx;", RestCtxLine)
+  str-concat("        free(_ctx_", SpIdxS, FreeLine1)
+  str-concat(FreeLine1, ");", FreeLine)
+  str-concat("        return _r_", SpIdxS, RetLine1)
+  str-concat(RetLine1, ";", RetLine)
+  equal(Lines, [Comment, "    {", CtxInitLine, SetCtxLine, CallLine, RestCtxLine, FreeLine, RetLine, "    }"])
+
+cps-split-ctx-init(CtxName, AllSplitPos, SpIdxS, Line) if:
+  // Heap-allocate context struct (caller frees after pred returns).
+  // Generates: _ctx_NAME_t *_ctx_N = memcpy(malloc(...), &(T){...}, sizeof(T));
+  ctx-init-varlist(AllSplitPos, VarParts)
+  str-join(VarParts, ", ", VarsStr)
+  str-concat("        ", CtxName, P1)
+  str-concat(P1, "_t *_ctx_", P2)
+  str-concat(P2, SpIdxS, P3)
+  str-concat(P3, " = memcpy(malloc(sizeof(", P4)
+  str-concat(P4, CtxName, P5)
+  str-concat(P5, "_t)), &(", P6)
+  str-concat(P6, CtxName, P7)
+  str-concat(P7, "_t){ ", P8)
+  str-concat(P8, VarsStr, P9)
+  str-concat(P9, ", k, env->cont_ctx }, sizeof(", P10)
+  str-concat(P10, CtxName, P11)
+  str-concat(P11, "_t));", Line)
+
+ctx-init-varlist([], [])
+
+ctx-init-varlist(Vars, Parts) if:
+  list-cons(V, Rest, Vars)
+  c-id(V, CV)
+  str-concat("var_", CV, Part)
+  ctx-init-varlist(Rest, RestParts)
+  list-cons(Part, RestParts, Parts)
+
+cps-call-line(CName, "", SpIdxS, ContFuncName, Line) if:
+  str-concat("        int _r_", SpIdxS, P1)
+  str-concat(P1, " = pred_", P2)
+  str-concat(P2, CName, P3)
+  str-concat(P3, "(env, ", P4)
+  str-concat(P4, ContFuncName, P5)
+  str-concat(P5, ");", Line)
+
+cps-call-line(CName, ArgExpr, SpIdxS, ContFuncName, Line) if:
+  str-non-empty(ArgExpr)
+  str-concat("        int _r_", SpIdxS, P1)
+  str-concat(P1, " = pred_", P2)
+  str-concat(P2, CName, P3)
+  str-concat(P3, "(env, ", P4)
+  str-concat(P4, ArgExpr, P5)
+  str-concat(P5, ", ", P6)
+  str-concat(P6, ContFuncName, P7)
+  str-concat(P7, ");", Line)
+
+// ── CPS rule function ─────────────────────────────────────────────────────────
+
+emit-cps-rule-func(CName, RuleIdxS, HeadArgs, Conds, AllVars, SplitPos, BodyVars, Lines) if:
+  head-params-decl(HeadArgs, ParamStr)
+  str-concat4("static int rule_", CName, "_", RuleIdxS, SigPre)
+  simple-rule-sig(SigPre, ParamStr, Sig)
+  body-var-decl-lines(BodyVars, VarDeclLines)
+  head-unify-lines(HeadArgs, UnifyLines)
+  // Conditions before first split
+  list-head(SplitPos, FirstSp)
+  conds-slice(Conds, 0.0, FirstSp, PreSplitConds)
+  emit-conds-at(PreSplitConds, 0.0, PreCondLines)
+  // First CPS split
+  str-concat4("_ctx_", CName, "_", RuleIdxS, CtxName)
+  list-head(SplitPos, FSp)
+  list-nth(Conds, FSp, FirstSplitCond)
+  number-to-str(FSp, FSpS)
+  str-concat6("_cont_", CName, "_", RuleIdxS, "_", FSpS, FirstContName)
+  emit-cps-split-at(CtxName, AllVars, FirstSplitCond, FSp, FirstContName, SplitLines)
+  list-append([Sig], VarDeclLines, L1)
+  list-append(L1, UnifyLines, L2)
+  list-append(L2, PreCondLines, L3)
+  list-append(L3, SplitLines, L4)
+  list-append(L4, ["}", ""], Lines)
+
+// ── Rule emission dispatcher ──────────────────────────────────────────────────
+
+// emit-rule(PredName, RuleIdx, HeadArgs, Conds, Lines)
+emit-rule(PredName, RuleIdx, HeadArgs, [], Lines) if:
+  // Unit rule (no conditions)
+  emit-simple-rule(PredName, RuleIdx, HeadArgs, [], Lines)
+
+emit-rule(PredName, RuleIdx, HeadArgs, Conds, Lines) if:
+  list-cons(AV_, BV_, Conds)
+  split-positions(Conds, SplitPos)
+  list-empty(SplitPos)
+  emit-simple-rule(PredName, RuleIdx, HeadArgs, Conds, Lines)
+
+emit-rule(PredName, RuleIdx, HeadArgs, Conds, Lines) if:
+  list-cons(AV_, BV_, Conds)
+  split-positions(Conds, SplitPos)
+  list-cons(SP1_, SP2_, SplitPos)
+  emit-cps-rule(PredName, RuleIdx, HeadArgs, Conds, Lines)
+
+// ── Collect rules grouped by predicate ───────────────────────────────────────
+
+// group-rules(Stmts, Groups)
+// Groups = list of [PredName, [Rule0, Rule1, ...]]
+group-rules(Stmts, Groups) if:
+  group-rules-acc(Stmts, [], Groups)
+
+group-rules-acc([], Acc, Result) if:
+  list-reverse(Acc, Result)
+
+group-rules-acc(Stmts, Acc, Result) if:
+  list-cons(Stmt, Rest, Stmts)
+  is-rule-stmt(Stmt)
+  stmt-pred(Stmt, PredName)
+  stmt-headargs(Stmt, HeadArgs)
+  stmt-conds(Stmt, Conds)
+  add-rule-to-groups(PredName, HeadArgs, Conds, Acc, NewAcc)
+  group-rules-acc(Rest, NewAcc, Result)
+
+group-rules-acc(Stmts, Acc, Result) if:
+  list-cons(Stmt, Rest, Stmts)
+  not is-rule-stmt(Stmt)
+  group-rules-acc(Rest, Acc, Result)
+
+is-rule-stmt(["rule", Name, Args, Conds])
+is-rule-stmt(["unit", Name, Args])
+
+stmt-pred(["rule", Name, Args, Conds], Name)
+stmt-pred(["unit", Name, Args], Name)
+
+stmt-headargs(["rule", Name, Args, Conds], Args)
+stmt-headargs(["unit", Name, Args], Args)
+
+stmt-conds(["rule", Name, Args, Conds], Conds)
+stmt-conds(["unit", Name, Args], [])
+
+// add-rule-to-groups: add rule to existing group or create new group
+add-rule-to-groups(PredName, HeadArgs, Conds, [], [[PredName, [[HeadArgs, Conds]]]])
+
+add-rule-to-groups(PredName, HeadArgs, Conds, Groups, NewGroups) if:
+  list-cons(Group, RestGroups, Groups)
+  list-head(Group, GroupPred)
+  equal(GroupPred, PredName)
+  list-tail(Group, GroupRest)
+  list-head(GroupRest, Rules)
+  list-append(Rules, [[HeadArgs, Conds]], NewRules)
+  list-cons([PredName, NewRules], RestGroups, NewGroups)
+
+add-rule-to-groups(PredName, HeadArgs, Conds, Groups, NewGroups) if:
+  list-cons(Group, RestGroups, Groups)
+  list-head(Group, GroupPred)
+  not equal(GroupPred, PredName)
+  add-rule-to-groups(PredName, HeadArgs, Conds, RestGroups, NewRestGroups)
+  list-cons(Group, NewRestGroups, NewGroups)
+
+// ── Forward declarations ──────────────────────────────────────────────────────
+
+emit-forward-decls(Groups, Lines) if:
+  equal(Lines0, ["// Forward declarations"])
+  emit-group-fwd-decls(Groups, DeclLines)
+  list-append(Lines0, DeclLines, Lines1)
+  list-append(Lines1, [""], Lines)
+
+emit-group-fwd-decls([], [])
+
+emit-group-fwd-decls(Groups, Lines) if:
+  list-cons(Group, Rest, Groups)
+  list-head(Group, PredName)
+  list-tail(Group, GroupRest)
+  list-head(GroupRest, Rules)
+  list-head(Rules, FirstRule)
+  list-head(FirstRule, FirstHeadArgs)
+  c-id(PredName, CName)
+  head-params-decl(FirstHeadArgs, ParamStr)
+  fwd-decl-lines(CName, ParamStr, FwdLines)
+  emit-group-fwd-decls(Rest, RestLines)
+  list-append(FwdLines, RestLines, Lines)
+
+fwd-decl-lines(CName, "", Lines) if:
+  str-concat3("static int rule_", CName, "_0(logos_env *env, logos_cont k);", L1)
+  str-concat3("int pred_", CName, "(logos_env *env, logos_cont k);", L2)
+  equal(Lines, [L1, L2])
+
+fwd-decl-lines(CName, ParamStr, Lines) if:
+  str-non-empty(ParamStr)
+  str-concat3("static int rule_", CName, "_0(logos_env *env, ", L1p)
+  str-concat(L1p, ParamStr, L1p2)
+  str-concat(L1p2, ", logos_cont k);", L1)
+  str-concat3("int pred_", CName, "(logos_env *env, ", L2p)
+  str-concat(L2p, ParamStr, L2p2)
+  str-concat(L2p2, ", logos_cont k);", L2)
+  equal(Lines, [L1, L2])
+
+// ── Rule functions section ────────────────────────────────────────────────────
+
+emit-all-rule-funcs(Groups, Lines) if:
+  emit-all-rule-funcs-acc(Groups, [], Lines)
+
+emit-all-rule-funcs-acc([], Acc, Result) if:
+  list-reverse(Acc, RevAcc)
+  list-flatten(RevAcc, Result)
+
+emit-all-rule-funcs-acc(Groups, Acc, Result) if:
+  list-cons(Group, Rest, Groups)
+  list-head(Group, PredName)
+  list-tail(Group, GR)
+  list-head(GR, Rules)
+  emit-group-rules(PredName, Rules, 0.0, GroupLines)
+  list-cons(GroupLines, Acc, NewAcc)
+  emit-all-rule-funcs-acc(Rest, NewAcc, Result)
+
+emit-group-rules(PredName, [], Idx, [])
+
+emit-group-rules(PredName, Rules, Idx, Lines) if:
+  list-cons(Rule, Rest, Rules)
+  list-head(Rule, HeadArgs)
+  list-tail(Rule, RuleTail)
+  list-head(RuleTail, Conds)
+  emit-rule(PredName, Idx, HeadArgs, Conds, RuleLines)
+  num-add(Idx, 1.0, NextIdx)
+  emit-group-rules(PredName, Rest, NextIdx, RestLines)
+  list-append(RuleLines, RestLines, Lines)
+
+// ── Predicate dispatchers ─────────────────────────────────────────────────────
+
+emit-pred-dispatchers(Groups, Lines) if:
+  emit-pred-dispatchers-acc(Groups, [], Lines)
+
+emit-pred-dispatchers-acc([], Acc, Result) if:
+  list-reverse(Acc, RevAcc)
+  list-flatten(RevAcc, Result)
+
+emit-pred-dispatchers-acc(Groups, Acc, Result) if:
+  list-cons(Group, Rest, Groups)
+  list-head(Group, PredName)
+  list-tail(Group, GR)
+  list-head(GR, Rules)
+  list-head(Rules, FirstRule)
+  list-head(FirstRule, FirstHeadArgs)
+  c-id(PredName, CName)
+  head-params-decl(FirstHeadArgs, ParamStr)
+  head-params-pass(FirstHeadArgs, PassStr)
+  list-length(Rules, NRules)
+  emit-dispatcher(CName, ParamStr, PassStr, NRules, Rules, DispLines)
+  list-cons(DispLines, Acc, NewAcc)
+  emit-pred-dispatchers-acc(Rest, NewAcc, Result)
+
+emit-dispatcher(CName, ParamStr, PassStr, NRules, Rules, Lines) if:
+  disp-sig(CName, ParamStr, Sig)
+  disp-rule-calls(CName, PassStr, NRules, CallLines)
+  equal(RetLine, "    return 0;")
+  equal(Close, "}")
+  equal(Blank, "")
+  list-append([Sig], CallLines, L1)
+  list-append(L1, [RetLine, Close, Blank], Lines)
+
+disp-sig(CName, "", Sig) if:
+  str-concat3("int pred_", CName, "(logos_env *env, logos_cont k) {", Sig)
+
+disp-sig(CName, ParamStr, Sig) if:
+  str-non-empty(ParamStr)
+  str-concat3("int pred_", CName, "(logos_env *env, ", SP1)
+  str-concat(SP1, ParamStr, SP2)
+  str-concat(SP2, ", logos_cont k) {", Sig)
+
+disp-rule-calls(CName, PassStr, NRules, Lines) if:
+  disp-rule-calls-acc(CName, PassStr, 0.0, NRules, [], Lines)
+
+disp-rule-calls-acc(CName, PassStr, Idx, NRules, Acc, Result) if:
+  Idx >= NRules
+  list-reverse(Acc, Rev)
+  list-flatten(Rev, Result)
+
+disp-rule-calls-acc(CName, PassStr, Idx, NRules, Acc, Result) if:
+  Idx < NRules
+  number-to-str(Idx, IdxS)
+  disp-one-rule-call(CName, PassStr, IdxS, CallLines)
+  list-cons(CallLines, Acc, NewAcc)
+  num-add(Idx, 1.0, NextIdx)
+  disp-rule-calls-acc(CName, PassStr, NextIdx, NRules, NewAcc, Result)
+
+disp-one-rule-call(CName, "", IdxS, Lines) if:
+  str-concat3("    { logos_mark_t _m = logos_mark(env);\n    if (rule_", CName, "_", P1)
+  str-concat(P1, IdxS, P2)
+  str-concat(P2, "(env, k)) { logos_undo(env, _m); return 1; }", P3)
+  str-concat(P3, "\n    logos_undo(env, _m); }", Line)
+  equal(Lines, [Line])
+
+disp-one-rule-call(CName, PassStr, IdxS, Lines) if:
+  str-non-empty(PassStr)
+  str-concat3("    { logos_mark_t _m = logos_mark(env);\n    if (rule_", CName, "_", P1)
+  str-concat(P1, IdxS, P2)
+  str-concat(P2, "(env, ", P3)
+  str-concat(P3, PassStr, P4)
+  str-concat(P4, ", k)) { logos_undo(env, _m); return 1; }", P5)
+  str-concat(P5, "\n    logos_undo(env, _m); }", Line)
+  equal(Lines, [Line])
+
+// ── Facts / setup section ─────────────────────────────────────────────────────
+
+emit-setup(Stmts, Lines) if:
+  collect-facts(Stmts, Facts)
+  emit-fact-lines(Facts, FactLines)
+  list-append(["void logos_setup(logos_graph *g) {"], FactLines, L1)
+  list-append(L1, ["}", ""], Lines)
+
+collect-facts([], [])
+
+collect-facts(Stmts, Facts) if:
+  list-cons(Stmt, Rest, Stmts)
+  is-bind-stmt(Stmt)
+  collect-facts(Rest, RestFacts)
+  list-cons(Stmt, RestFacts, Facts)
+
+collect-facts(Stmts, Facts) if:
+  list-cons(Stmt, Rest, Stmts)
+  not is-bind-stmt(Stmt)
+  collect-facts(Rest, Facts)
+
+is-bind-stmt(["bind", Subj, Pred, Value])
+
+emit-fact-lines([], [])
+
+emit-fact-lines(Facts, Lines) if:
+  list-cons(["bind", Subj, Pred, Value], Rest, Facts)
+  c-esc(Subj, ESubj)
+  c-esc(Pred, EPred)
+  value-expr(Value, ValExpr)
+  str-concat3("    logos_graph_assert(g, \"", ESubj, "\", \"", L1)
+  str-concat(L1, EPred, L2)
+  str-concat(L2, "\", ", L3)
+  str-concat(L3, ValExpr, L4)
+  str-concat(L4, ", 1.0);", Line)
+  emit-fact-lines(Rest, RestLines)
+  list-cons(Line, RestLines, Lines)
+
+// ── Bool query codegen ────────────────────────────────────────────────────────
+
+emit-bool-query(Name, Args, Lines) if:
+  c-id(Name, CName)
+  query-args-expr(Args, ArgExpr)
+  query-text(Name, Args, TextStr)
+  query-bool-body(CName, ArgExpr, TextStr, BodyLines)
+  equal(Lines, BodyLines)
+
+query-bool-body(CName, ArgExpr, TextStr, Lines) if:
+  str-concat3("        pred_", CName, "(", CallPre)
+  str-non-empty(ArgExpr)
+  str-concat(CallPre, "&env, ", CallPre2)
+  str-concat(CallPre2, ArgExpr, CallPre3)
+  str-concat(CallPre3, ", k_bool_capture);", CallLine)
+  c-esc(TextStr, EText)
+  str-concat3("        logos_print_bool_result(\"", EText, "\", _found, _conf);", PrintLine)
+  bool-body-lines(CallLine, PrintLine, Lines)
+
+query-bool-body(CName, "", TextStr, Lines) if:
+  str-concat3("        pred_", CName, "(&env, k_bool_capture);", CallLine)
+  c-esc(TextStr, EText)
+  str-concat3("        logos_print_bool_result(\"", EText, "\", _found, _conf);", PrintLine)
+  bool-body-lines(CallLine, PrintLine, Lines)
+
+bool-body-lines(CallLine, PrintLine, Lines) if:
+  list-cons("    {", ["        int    _found = 0;", "        double _conf  = 0.0;", "        env.capture_found = &_found;", "        env.capture_conf  = &_conf;", "        env.confidence    = 1.0;"], L1)
+  list-append(L1, [CallLine, PrintLine, "    }"], Lines)
+
+// query-args-expr(Args, Expr) — comma-separated C expressions for query args
+query-args-expr([], "")
+
+query-args-expr(Args, Expr) if:
+  list-cons(AV_, BV_, Args)
+  query-args-list(Args, Parts)
+  str-join(Parts, ", ", Expr)
+
+query-args-list([], [])
+
+query-args-list(Args, Parts) if:
+  list-cons(Arg, Rest, Args)
+  query-arg-expr(Arg, E)
+  query-args-list(Rest, RestParts)
+  list-cons(E, RestParts, Parts)
+
+query-arg-expr(["var", Name], Expr) if:
+  c-id(Name, CName)
+  str-concat("var_", CName, Expr)
+
+query-arg-expr(["id", Name], Expr) if:
+  c-esc(Name, Esc)
+  str-concat3("logos_string(\"", Esc, "\")", Expr)
+
+query-arg-expr(["duration", N, Unit], Expr) if:
+  dur-to-secs(N, Unit, Secs)
+  number-to-float-str(Secs, SecsStr)
+  str-concat3("logos_duration(", SecsStr, ")", Expr)
+
+// String tokens include surrounding quotes — strip them before escaping
+query-arg-expr(S, Expr) if:
+  is-string(S)
+  str-starts-with(S, "\"")
+  strip-quotes(S, Inner)
+  c-esc(Inner, Esc)
+  str-concat3("logos_string(\"", Esc, "\")", Expr)
+
+query-arg-expr(S, Expr) if:
+  is-string(S)
+  not str-starts-with(S, "\"")
+  c-esc(S, Esc)
+  str-concat3("logos_string(\"", Esc, "\")", Expr)
+
+query-arg-expr(N, Expr) if:
+  is-number(N)
+  number-to-str(N, NS)
+  str-concat3("logos_float(", NS, ")", Expr)
+
+// List literal in query arg: build a logos_list_cons chain
+query-arg-expr(["list-pat", Elems], Expr) if:
+  query-arg-list-expr(Elems, Expr)
+
+query-arg-list-expr([], "logos_nil()")
+
+query-arg-list-expr(Elems, Expr) if:
+  list-cons(Head, Tail, Elems)
+  query-arg-expr(Head, HeadExpr)
+  query-arg-list-expr(Tail, TailExpr)
+  str-concat3("logos_list_cons(", HeadExpr, ", ", L1)
+  str-concat(L1, TailExpr, L2)
+  str-concat(L2, ")", Expr)
+
+// query-text: human-readable query text for printing
+query-text(Name, Args, Text) if:
+  query-text-args(Args, ArgTexts)
+  str-join(ArgTexts, ", ", ArgsStr)
+  str-concat3(Name, "(", ArgsStr, T1)
+  str-concat(T1, ")", Text)
+
+query-text-args([], [])
+
+query-text-args(Args, Parts) if:
+  list-cons(Arg, Rest, Args)
+  query-text-arg(Arg, T)
+  query-text-args(Rest, RestParts)
+  list-cons(T, RestParts, Parts)
+
+query-text-arg(["var", Name], Name)
+query-text-arg(["id", Name], Name)
+query-text-arg(S, S) if:
+  is-string(S)
+query-text-arg(N, NS) if:
+  is-number(N)
+  number-to-str(N, NS)
+query-text-arg(["list-pat", Elems], Text) if:
+  query-text-args(Elems, Parts)
+  str-join(Parts, ", ", Inner)
+  str-concat("[", Inner, T1)
+  str-concat(T1, "]", Text)
+
+// ── Find query codegen ────────────────────────────────────────────────────────
+
+emit-find-query(VarNames, Conds, Lines) if:
+  // Get the first predicate call condition
+  first-pred-call(Conds, CallName, CallArgs)
+  c-id(CallName, CName)
+  list-head(VarNames, FirstVar)
+  list-length(VarNames, NV)
+  number-to-str(NV, NVStr)
+  query-args-with-var(CallArgs, FirstVar, ArgExpr)
+  vnames-literal(VarNames, VNamesLit)
+  vals-literal(VarNames, CallArgs, FirstVar, ValsLit)
+  str-concat("        /* find ", FirstVar, CMT1)
+  str-concat(CMT1, " where ", CMT2)
+  str-concat(CMT2, CallName, CMT3)
+  str-concat(CMT3, "(...) */", Comment)
+  find-pred-call-line(CName, ArgExpr, CallLine)
+  str-concat("                    const char *_vnames[", NVStr, VNL1)
+  str-concat(VNL1, "] = ", VNL2)
+  str-concat(VNL2, VNamesLit, VNL3)
+  str-concat(VNL3, ";", VNamesLine)
+  str-concat("                    logos_term   _vals[", NVStr, VLL1)
+  str-concat(VLL1, "]   = ", VLL2)
+  str-concat(VLL2, ValsLit, VLL3)
+  str-concat(VLL3, ";", ValsLine)
+  str-concat("                    logos_print_find_row(_vnames, _vals, ", NVStr, PrintL1)
+  str-concat(PrintL1, ", _conf);", PrintLine)
+  build-find-lines(Comment, CallLine, VNamesLine, ValsLine, PrintLine, Lines)
+
+build-find-lines(Comment, CallLine, VNamesLine, ValsLine, PrintLine, Lines) if:
+  equal(FixedHead, ["    {", Comment, "        const char *_seen[LOGOS_MAX_FACTS];", "        int _nseen = 0, _i, _j;", "        memset(_seen, 0, sizeof(_seen));"])
+  equal(FixedLoop, ["        for (_i = 0; _i < graph.count; _i++) {", "            const char *_s = graph.facts[_i].subject;", "            int _dup = 0;", "            for (_j = 0; _j < _nseen; _j++)"])
+  equal(FixedDup, ["                if (_seen[_j] == _s) { _dup = 1; break; }", "            if (_dup) continue;", "            _seen[_nseen++] = _s;", "            {"])
+  equal(FixedEnv, ["                int    _found = 0;", "                double _conf  = 0.0;", "                env.capture_found = &_found;", "                env.capture_conf  = &_conf;", "                env.confidence    = 1.0;"])
+  equal(FixedTail, ["                if (_found) {", VNamesLine, ValsLine, PrintLine, "                }", "            }", "        }", "    }"])
+  list-append(FixedHead, FixedLoop, S1)
+  list-append(S1, FixedDup, S2)
+  list-append(S2, FixedEnv, S3)
+  list-cons(CallLine, FixedTail, S4)
+  list-append(S3, S4, Lines)
+
+first-pred-call(Conds, Name, Args) if:
+  list-cons(["call", Name, Args], Rest, Conds)
+
+first-pred-call(Conds, Name, Args) if:
+  list-cons(Cond, Rest, Conds)
+  not list-nth(Cond, 0.0, "call")
+  first-pred-call(Rest, Name, Args)
+
+// query-args-with-var: replace find variable with logos_string(_s)
+query-args-with-var(Args, FindVar, Expr) if:
+  query-args-with-var-list(Args, FindVar, Parts)
+  str-join(Parts, ", ", Expr)
+
+query-args-with-var-list([], FindVar, [])
+
+query-args-with-var-list(Args, FindVar, Parts) if:
+  list-cons(Arg, Rest, Args)
+  query-arg-with-var(Arg, FindVar, E)
+  query-args-with-var-list(Rest, FindVar, RestParts)
+  list-cons(E, RestParts, Parts)
+
+query-arg-with-var(["var", Name], FindVar, "logos_string(_s)") if:
+  equal(Name, FindVar)
+
+query-arg-with-var(["var", Name], FindVar, Expr) if:
+  not equal(Name, FindVar)
+  c-id(Name, CName)
+  str-concat("var_", CName, Expr)
+
+query-arg-with-var(["id", Name], FindVar, Expr) if:
+  c-esc(Name, Esc)
+  str-concat3("logos_string(\"", Esc, "\")", Expr)
+
+query-arg-with-var(["duration", N, Unit], FindVar, Expr) if:
+  dur-to-secs(N, Unit, Secs)
+  number-to-float-str(Secs, SecsStr)
+  str-concat3("logos_duration(", SecsStr, ")", Expr)
+
+query-arg-with-var(["path-var", VarName, Field], FindVar, Expr) if:
+  c-id(VarName, CVarName)
+  str-concat3("logos_walk(env, var_", CVarName, ").s", Expr)
+
+query-arg-with-var(S, FindVar, Expr) if:
+  is-string(S)
+  str-starts-with(S, "\"")
+  strip-quotes(S, Inner)
+  c-esc(Inner, Esc)
+  str-concat3("logos_string(\"", Esc, "\")", Expr)
+
+query-arg-with-var(S, FindVar, Expr) if:
+  is-string(S)
+  not str-starts-with(S, "\"")
+  c-esc(S, Esc)
+  str-concat3("logos_string(\"", Esc, "\")", Expr)
+
+query-arg-with-var(N, FindVar, Expr) if:
+  is-number(N)
+  number-to-str(N, NS)
+  str-concat3("logos_float(", NS, ")", Expr)
+
+find-pred-call-line(CName, "", Line) if:
+  str-concat3("                pred_", CName, "(&env, k_bool_capture);", Line)
+
+find-pred-call-line(CName, ArgExpr, Line) if:
+  str-non-empty(ArgExpr)
+  str-concat3("                pred_", CName, "(&env, ", P1)
+  str-concat(P1, ArgExpr, P2)
+  str-concat(P2, ", k_bool_capture);", Line)
+
+vnames-literal(VarNames, Literal) if:
+  vnames-parts(VarNames, Parts)
+  str-join(Parts, ", ", Inner)
+  str-concat("{", Inner, L1)
+  str-concat(L1, "}", Literal)
+
+vnames-parts([], [])
+
+vnames-parts(VarNames, Parts) if:
+  list-cons(V, Rest, VarNames)
+  str-concat3("\"", V, "\"", Part)
+  vnames-parts(Rest, RestParts)
+  list-cons(Part, RestParts, Parts)
+
+vals-literal(VarNames, CallArgs, FindVar, Literal) if:
+  vals-parts(VarNames, CallArgs, FindVar, Parts)
+  str-join(Parts, ", ", Inner)
+  str-concat("{", Inner, L1)
+  str-concat(L1, "}", Literal)
+
+vals-parts([], CallArgs, FindVar, [])
+
+vals-parts(VarNames, CallArgs, FindVar, Parts) if:
+  list-cons(V, Rest, VarNames)
+  val-part-for-var(V, CallArgs, FindVar, Part)
+  vals-parts(Rest, CallArgs, FindVar, RestParts)
+  list-cons(Part, RestParts, Parts)
+
+val-part-for-var(V, CallArgs, FindVar, "logos_string(_s)") if:
+  equal(V, FindVar)
+
+val-part-for-var(V, CallArgs, FindVar, Part) if:
+  not equal(V, FindVar)
+  c-esc(V, EV)
+  str-concat3("logos_string(\"", EV, "\")", Part)
+
+// ── Queries section ───────────────────────────────────────────────────────────
+
+emit-queries(Stmts, Lines) if:
+  collect-queries(Stmts, Queries)
+  emit-query-list(Queries, Lines)
+
+collect-queries([], [])
+
+collect-queries(Stmts, Queries) if:
+  list-cons(Stmt, Rest, Stmts)
+  is-query-stmt(Stmt)
+  collect-queries(Rest, RestQ)
+  list-cons(Stmt, RestQ, Queries)
+
+collect-queries(Stmts, Queries) if:
+  list-cons(Stmt, Rest, Stmts)
+  not is-query-stmt(Stmt)
+  collect-queries(Rest, Queries)
+
+is-query-stmt(["query-bool", Name, Args])
+is-query-stmt(["query-find", VarNames, Conds])
+
+emit-query-list([], [])
+
+emit-query-list(Queries, Lines) if:
+  list-cons(Query, Rest, Queries)
+  emit-one-query(Query, QLines)
+  emit-query-list(Rest, RestLines)
+  list-append(QLines, RestLines, Lines)
+
+emit-one-query(["query-bool", Name, Args], Lines) if:
+  emit-bool-query(Name, Args, Lines)
+
+emit-one-query(["query-find", VarNames, Conds], Lines) if:
+  emit-find-query(VarNames, Conds, Lines)
+
+// ── Main function ─────────────────────────────────────────────────────────────
+
+emit-main(Stmts, Lines) if:
+  emit-queries(Stmts, QueryLines)
+  equal(MainHeader, ["int main(int argc, char **argv) {", "    logos_argc = argc; logos_argv = argv;", "    logos_graph graph = {0};", "    logos_env   env   = {0};", "    logos_env_init(&env);", "    env.graph = &graph;", "    logos_setup(&graph);", ""])
+  list-append(MainHeader, QueryLines, L1)
+  list-append(L1, ["    return 0;", "}", ""], Lines)
+
+// ── Preamble ──────────────────────────────────────────────────────────────────
+
+preamble-lines(["/* Generated by Logos compiler — do not edit by hand */", "#include \"logos_runtime.h\"", "#include \"logos_primitives.h\"", "#include \"logos_meta.h\"", "#include \"logos_lexer.h\"", "#include <stdio.h>", "#include <string.h>", "#include <stdlib.h>", ""])
+
+// ── Top-level compile-program ─────────────────────────────────────────────────
+
+// compile-program(AST, CSource) — compile a program AST to C source string
+compile-program(["program", Stmts], CSource) if:
+  group-rules(Stmts, Groups)
+  // 1. Preamble
+  preamble-lines(Preamble)
+  // 2. Forward declarations
+  emit-forward-decls(Groups, FwdDecls)
+  // 3. Rule functions
+  emit-all-rule-funcs(Groups, RuleFuncs)
+  // 4. Dispatchers
+  emit-pred-dispatchers(Groups, Dispatchers)
+  // 5. Setup
+  emit-setup(Stmts, SetupLines)
+  // 6. Main
+  emit-main(Stmts, MainLines)
+  // Join all sections
+  list-append(Preamble, FwdDecls, S1)
+  list-append(S1, RuleFuncs, S2)
+  list-append(S2, Dispatchers, S3)
+  list-append(S3, SetupLines, S4)
+  list-append(S4, MainLines, AllLines)
+  str-join(AllLines, "\n", CSource)
+
+// ── Path utilities for import resolution ──────────────────────────────────────
+
+// path-join(Dir, RelFile, Result) — join directory with relative file path
+path-join("", Rel, Rel)
+path-join(Dir, Rel, Result) if:
+  str-non-empty(Dir)
+  str-concat3(Dir, "/", Rel, Result)
+
+// path-add-logos-ext(Path, Result) — add .logos extension if not present
+path-add-logos-ext(Path, Path) if:
+  str-suffix(".logos", Path)
+path-add-logos-ext(Path, Result) if:
+  not str-suffix(".logos", Path)
+  str-concat(Path, ".logos", Result)
+
+// path-all-but-last(Parts, Result) — all list elements except the last
+path-all-but-last([], [])
+path-all-but-last(Parts, []) if:
+  list-cons(HPart, TPart, Parts)
+  list-empty(TPart)
+path-all-but-last(Parts, Result) if:
+  list-cons(H, T, Parts)
+  list-cons(TH, TT, T)
+  path-all-but-last(T, TResult)
+  list-cons(H, TResult, Result)
+
+// path-dirname(Path, Dir) — extract directory from file path
+// e.g. path-dirname("logos/compiler.logos", "logos")
+// e.g. path-dirname("compiler.logos", "")
+path-dirname(Path, Dir) if:
+  str-split(Path, "/", Parts)
+  path-all-but-last(Parts, DirParts)
+  str-join(DirParts, "/", Dir)
+
+// path-resolve-import(BaseDir, QuotedSource, ResolvedPath)
+// Resolves a quoted import source relative to BaseDir.
+// e.g. path-resolve-import("logos", "\"compiler\"", "logos/compiler.logos")
+path-resolve-import(BaseDir, QuotedSource, ResolvedPath) if:
+  strip-quotes(QuotedSource, Inner)
+  path-add-logos-ext(Inner, WithExt)
+  path-join(BaseDir, WithExt, ResolvedPath)
+
+// ── Import resolution ──────────────────────────────────────────────────────────
+
+// is-import-stmt(Stmt) — true if Stmt is an import statement
+is-import-stmt(["import", WildOrName, Source])
+
+// import-source(Stmt, Source) — extract the quoted source path from an import
+import-source(["import", WildOrName, Source], Source)
+
+// resolve-imports(Stmts, BaseDir, Loaded, FlatStmts, NewLoaded)
+// Expand all import statements, inlining imported statements (DFS, deduplicated).
+// Loaded: list of already-resolved file paths (for deduplication).
+resolve-imports(Stmts, BaseDir, Loaded, FlatStmts, NewLoaded) if:
+  resolve-imports-acc(Stmts, BaseDir, Loaded, [], FlatStmts, NewLoaded)
+
+// Base case: no statements remaining
+resolve-imports-acc([], BaseDir, Loaded, Acc, Acc, Loaded)
+
+// Skip import if already loaded
+resolve-imports-acc(Stmts, BaseDir, Loaded, Acc, Result, FinalLoaded) if:
+  list-cons(Stmt, Rest, Stmts)
+  is-import-stmt(Stmt)
+  import-source(Stmt, ImportSource)
+  path-resolve-import(BaseDir, ImportSource, FullPath)
+  list-member(FullPath, Loaded)
+  resolve-imports-acc(Rest, BaseDir, Loaded, Acc, Result, FinalLoaded)
+
+// Load new import: lex, parse, recursively resolve, then inline
+resolve-imports-acc(Stmts, BaseDir, Loaded, Acc, Result, FinalLoaded) if:
+  list-cons(Stmt, Rest, Stmts)
+  is-import-stmt(Stmt)
+  import-source(Stmt, ImportSource)
+  path-resolve-import(BaseDir, ImportSource, FullPath)
+  not list-member(FullPath, Loaded)
+  lex-file(FullPath, ImportToks)
+  parse-tokens(ImportToks, ["program", ImportStmts])
+  path-dirname(FullPath, ImportDir)
+  list-cons(FullPath, Loaded, Loaded1)
+  resolve-imports-acc(ImportStmts, ImportDir, Loaded1, Acc, MidAcc, Loaded2)
+  resolve-imports-acc(Rest, BaseDir, Loaded2, MidAcc, Result, FinalLoaded)
+
+// Non-import statement: append to accumulator
+resolve-imports-acc(Stmts, BaseDir, Loaded, Acc, Result, FinalLoaded) if:
+  list-cons(Stmt, Rest, Stmts)
+  not is-import-stmt(Stmt)
+  list-append(Acc, [Stmt], NewAcc)
+  resolve-imports-acc(Rest, BaseDir, Loaded, NewAcc, Result, FinalLoaded)
+
+// ── compile-file entry point ──────────────────────────────────────────────────
+
+// compile-file(InputPath) — lex, parse, resolve imports, compile, write C to stdout
+compile-file(InputPath) if:
+  lex-file(InputPath, Tokens)
+  parse-tokens(Tokens, ["program", Stmts])
+  path-dirname(InputPath, BaseDir)
+  resolve-imports(Stmts, BaseDir, [], FlatStmts, LoadedFiles)
+  compile-program(["program", FlatStmts], CSource)
+  write-output(CSource)

@@ -21,10 +21,10 @@ int logos_prim_list_cons(logos_env *env, logos_term h, logos_term t,
                          logos_term l);
 /* list-empty(L)  : L is [] */
 int logos_prim_list_empty(logos_env *env, logos_term l);
-/* list-head(H, L): H = head of L */
-int logos_prim_list_head(logos_env *env, logos_term h, logos_term l);
-/* list-tail(T, L): T = tail of L */
-int logos_prim_list_tail(logos_env *env, logos_term t, logos_term l);
+/* list-head(L, H): H = head of L */
+int logos_prim_list_head(logos_env *env, logos_term l, logos_term h);
+/* list-tail(L, T): T = tail of L */
+int logos_prim_list_tail(logos_env *env, logos_term l, logos_term t);
 /* list-length(L, N): N = length of L */
 int logos_prim_list_length(logos_env *env, logos_term l, logos_term n);
 /* list-nth(L, N, X): X = L[N]  (0-based) */
@@ -75,6 +75,7 @@ int logos_prim_str_slice(logos_env *env, logos_term s, logos_term start,
                          logos_term end, logos_term result);
 int logos_prim_str_to_number(logos_env *env, logos_term s, logos_term n);
 int logos_prim_number_to_str(logos_env *env, logos_term n, logos_term s);
+int logos_prim_str_unescape(logos_env *env, logos_term s, logos_term result);
 int logos_prim_str_split(logos_env *env, logos_term s, logos_term sep,
                          logos_term lst);
 int logos_prim_str_join(logos_env *env, logos_term lst, logos_term sep,
@@ -95,5 +96,25 @@ int logos_prim_char_digit(logos_env *env, logos_term c);
 int logos_prim_char_whitespace(logos_env *env, logos_term c);
 int logos_prim_char_alnum(logos_env *env, logos_term c);
 int logos_prim_char_code(logos_env *env, logos_term c, logos_term n);
+
+/* ── I/O primitives ─────────────────────────────────────────────────────── */
+/* write-output(Text) : print Text to stdout (no newline) */
+int logos_prim_write_output(logos_env *env, logos_term text);
+/* write-line(Text) : print Text to stdout followed by newline */
+int logos_prim_write_line(logos_env *env, logos_term text);
+/* write-stderr(Text) : print Text to stderr (no newline) */
+int logos_prim_write_stderr(logos_env *env, logos_term text);
+/* read-file(Path, Content) : read file at Path into Content string */
+int logos_prim_read_file(logos_env *env, logos_term path, logos_term content);
+
+/* ── Command-line argument primitives ───────────────────────────────────── */
+/* argv(N, Value) : Value = argv[N] (0-based; fails if out of range) */
+int logos_prim_argv(logos_env *env, logos_term n, logos_term value);
+/* argc(N) : N = number of command-line arguments */
+int logos_prim_argc(logos_env *env, logos_term n);
+
+/* Set argc/argv from main() before running queries */
+extern int  logos_argc;
+extern char **logos_argv;
 
 #endif /* LOGOS_PRIMITIVES_H */

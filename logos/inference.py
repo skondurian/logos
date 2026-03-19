@@ -25,7 +25,7 @@ from logos.semantic_graph import SemanticGraph, FactNode, QueryResult
 from logos import errors as err
 
 
-MAX_DEPTH = 64
+MAX_DEPTH = 256
 
 # Global counter — each rule invocation gets a unique suffix, preventing
 # variable capture even when the same rule fires at the same depth in

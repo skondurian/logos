@@ -18,6 +18,9 @@
 //   interpret("examples/02_voting_rules.logos")
 
 import * from "stdlib/lists"
+import * from "stdlib/strings"
+import * from "parser"
+import * from "evaluator"
 
 // ── Entry point ────────────────────────────────────────────────────────────
 

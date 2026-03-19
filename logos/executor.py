@@ -41,7 +41,10 @@ class QueryOutput:
 
     @property
     def is_true(self) -> bool:
-        return bool(self.results) and not self.confidence.is_impossible()
+        # A query is TRUE if any proof was found; confidence is informational only.
+        # Deep inference chains (e.g. compiler.logos) can degrade confidence to
+        # near-zero while still finding a valid proof.
+        return bool(self.results)
 
     def __repr__(self) -> str:
         if self.is_true:
