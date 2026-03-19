@@ -1,0 +1,117 @@
+#!/usr/bin/env bash
+# logoscc — Logos binary compiler driver
+#
+# Compiles a .logos file to a native binary using the self-hosted Logos compiler.
+#
+# Usage:
+#   logoscc <input.logos> [-o output] [--keep-c] [--cc=<compiler>]
+#
+# Examples:
+#   logoscc examples/02_voting_rules.logos
+#   logoscc myprogram.logos -o myprogram
+#   logoscc myprogram.logos --keep-c          # also writes myprogram.c
+#
+# The compiler is resolved in this order:
+#   1. $LOGOS_COMPILE env var
+#   2. build/logos_compile  (relative to the repo root)
+#   3. __LOGOS_LIB__/logos_compile  (installed location, replaced at install time)
+#
+# Build the compiler first with:  make
+
+set -euo pipefail
+
+# ── Locate the Logos C-emitter binary ─────────────────────────────────────────
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+if [[ -n "${LOGOS_COMPILE:-}" ]]; then
+    LOGOS_COMPILE_BIN="$LOGOS_COMPILE"
+elif [[ -x "$REPO_ROOT/build/logos_compile" ]]; then
+    LOGOS_COMPILE_BIN="$REPO_ROOT/build/logos_compile"
+elif [[ -x "__LOGOS_LIB__/logos_compile" ]]; then
+    LOGOS_COMPILE_BIN="__LOGOS_LIB__/logos_compile"
+else
+    echo "logoscc: binary compiler not built. Run 'make' first." >&2
+    exit 1
+fi
+
+# ── Locate the runtime C sources ──────────────────────────────────────────────
+
+if [[ -d "$REPO_ROOT/logos/runtime" ]]; then
+    RUNTIME_DIR="$REPO_ROOT/logos/runtime"
+elif [[ -d "__LOGOS_LIB__/runtime" ]]; then
+    RUNTIME_DIR="__LOGOS_LIB__/runtime"
+else
+    echo "logoscc: cannot find Logos runtime sources." >&2
+    exit 1
+fi
+
+# ── Parse arguments ───────────────────────────────────────────────────────────
+
+INPUT=""
+OUTPUT=""
+KEEP_C=0
+CC_CMD="${CC:-cc}"
+
+usage() {
+    echo "usage: logoscc <input.logos> [-o output] [--keep-c] [--cc=<compiler>]" >&2
+    exit 1
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -o)           OUTPUT="$2"; shift 2 ;;
+        -o*)          OUTPUT="${1#-o}"; shift ;;
+        --keep-c)     KEEP_C=1; shift ;;
+        --cc=*)       CC_CMD="${1#--cc=}"; shift ;;
+        --cc)         CC_CMD="$2"; shift 2 ;;
+        --help|-h)    usage ;;
+        -*)           echo "logoscc: unknown flag: $1" >&2; usage ;;
+        *)            INPUT="$1"; shift ;;
+    esac
+done
+
+[[ -z "$INPUT" ]] && usage
+
+if [[ -z "$OUTPUT" ]]; then
+    OUTPUT="${INPUT%.logos}"
+    [[ "$OUTPUT" == "$INPUT" ]] && OUTPUT="${INPUT}.out"
+fi
+
+# ── Step 1: Logos → C ─────────────────────────────────────────────────────────
+
+TMPFILE="$(mktemp /tmp/logos_XXXXXX.c)"
+trap 'rm -f "$TMPFILE"' EXIT
+
+if ! "$LOGOS_COMPILE_BIN" "$INPUT" > "$TMPFILE" 2>/tmp/logoscc_err.txt; then
+    echo "logoscc: Logos compilation failed:" >&2
+    grep -v 'lex-file\|slab\|cons slab\|\[logos-debug\]' /tmp/logoscc_err.txt >&2
+    exit 1
+fi
+
+if [[ $KEEP_C -eq 1 ]]; then
+    cp "$TMPFILE" "${OUTPUT}.c"
+    echo "logoscc: generated C → ${OUTPUT}.c"
+fi
+
+# ── Step 2: C → native binary ─────────────────────────────────────────────────
+
+STACK_FLAGS=""
+if [[ "$(uname -s)" == "Darwin" ]]; then
+    STACK_FLAGS="-Wl,-stack_size,0x10000000"
+fi
+
+if ! "$CC_CMD" "$TMPFILE" \
+        "$RUNTIME_DIR/logos_runtime.c" \
+        "$RUNTIME_DIR/logos_primitives.c" \
+        "$RUNTIME_DIR/logos_meta.c" \
+        "$RUNTIME_DIR/logos_lexer.c" \
+        -I "$RUNTIME_DIR" \
+        -o "$OUTPUT" -O2 -lm $STACK_FLAGS 2>/tmp/logoscc_cc_err.txt; then
+    echo "logoscc: C compiler failed:" >&2
+    cat /tmp/logoscc_cc_err.txt >&2
+    exit 1
+fi
+
+echo "logoscc: compiled → $OUTPUT"

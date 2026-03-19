@@ -181,7 +181,7 @@ def compile_file(
     keep_c: bool = False,
     runtime_path: str | None = None,
 ) -> None:
-    """Compile a .logos file to a native binary.
+    """Compile a .logos file to a native binary via the Python codegen.
 
     Args:
         logos_path:   Path to the .logos source file.
