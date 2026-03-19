@@ -379,7 +379,8 @@ class Compiler:
         lines = [
             "int main(int argc, char **argv) {",
             "    logos_argc = argc; logos_argv = argv;",
-            "    logos_graph graph = {0};",
+            "    logos_graph graph;",
+            "    logos_graph_init(&graph);",
             "    logos_env   env   = {0};",
             "    logos_env_init(&env);",
             "    env.graph = &graph;",

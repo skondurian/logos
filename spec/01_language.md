@@ -221,6 +221,13 @@ threshold, the `fallback:` annotation specifies an alternative path to try.
 The first alternative meeting the threshold wins; otherwise the last fallback
 is used at its declared confidence.
 
+> **Caveat:** The confidence arithmetic is a heuristic, not rigorous probability
+> theory. Conjunction uses `P(A)×P(B)`, which assumes statistical independence —
+> an assumption that is rarely true in practice. Disjunction and degradation are
+> similarly simplified. The numbers express a *plausibility ordering*, not
+> calibrated probabilities. Do not read too much precision into the reported
+> confidence values.
+
 ---
 
 ## 5. Negation as Failure

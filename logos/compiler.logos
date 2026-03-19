@@ -1978,7 +1978,7 @@ emit-one-query(["query-find", VarNames, Conds], Lines) if:
 
 emit-main(Stmts, Lines) if:
   emit-queries(Stmts, QueryLines)
-  equal(MainHeader, ["int main(int argc, char **argv) {", "    logos_argc = argc; logos_argv = argv;", "    logos_graph graph = {0};", "    logos_env   env   = {0};", "    logos_env_init(&env);", "    env.graph = &graph;", "    logos_setup(&graph);", ""])
+  equal(MainHeader, ["int main(int argc, char **argv) {", "    logos_argc = argc; logos_argv = argv;", "    logos_graph graph;", "    logos_graph_init(&graph);", "    logos_env   env   = {0};", "    logos_env_init(&env);", "    env.graph = &graph;", "    logos_setup(&graph);", ""])
   list-append(MainHeader, QueryLines, L1)
   list-append(L1, ["    return 0;", "}", ""], Lines)
 

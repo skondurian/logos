@@ -296,10 +296,29 @@ int logos_unify(logos_env *env, logos_term a, logos_term b) {
 
 /* ── Graph ──────────────────────────────────────────────────────────────────── */
 
+#define LOGOS_GRAPH_INIT_CAP 256
+
+void logos_graph_init(logos_graph *g) {
+    g->facts    = (logos_fact *)malloc(LOGOS_GRAPH_INIT_CAP * sizeof(logos_fact));
+    g->count    = 0;
+    g->capacity = LOGOS_GRAPH_INIT_CAP;
+}
+
+void logos_graph_free(logos_graph *g) {
+    free(g->facts);
+    g->facts    = NULL;
+    g->count    = 0;
+    g->capacity = 0;
+}
+
 void logos_graph_assert(logos_graph *g, const char *subj, const char *pred,
                         logos_term val, double conf) {
     logos_fact *f;
-    if (g->count >= LOGOS_MAX_FACTS) return;
+    if (g->count >= g->capacity) {
+        int newcap = g->capacity * 2;
+        g->facts = (logos_fact *)realloc(g->facts, newcap * sizeof(logos_fact));
+        g->capacity = newcap;
+    }
     f             = &g->facts[g->count++];
     f->subject    = logos_intern(subj);
     f->predicate  = logos_intern(pred);

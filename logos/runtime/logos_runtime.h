@@ -65,10 +65,11 @@ typedef struct {
     double      confidence;
 } logos_fact;
 
-/* ── Graph ──────────────────────────────────────────────────────────────────── */
+/* ── Graph (dynamically grown heap array) ───────────────────────────────────── */
 typedef struct {
-    logos_fact facts[LOGOS_MAX_FACTS];
-    int        count;
+    logos_fact *facts;    /* heap-allocated; grows on demand */
+    int         count;
+    int         capacity;
 } logos_graph;
 
 /* ── Environment ────────────────────────────────────────────────────────────── */
@@ -103,6 +104,8 @@ logos_term   logos_walk(logos_env *env, logos_term t);
 int          logos_unify(logos_env *env, logos_term a, logos_term b);
 
 /* ── Graph ──────────────────────────────────────────────────────────────────── */
+void logos_graph_init(logos_graph *g);   /* initialize dynamic fact store      */
+void logos_graph_free(logos_graph *g);   /* release heap memory                */
 void logos_graph_assert(logos_graph *g, const char *subj, const char *pred,
                         logos_term val, double conf);
 int  logos_graph_lookup(logos_graph *g, const char *subj, const char *pred,
