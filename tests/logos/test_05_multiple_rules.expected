@@ -1,0 +1,4 @@
+can-vote(alice): true  [confidence: 0.950]
+can-vote(bob): false
+can-vote(carol): false
+P=alice  [confidence: 0.950]

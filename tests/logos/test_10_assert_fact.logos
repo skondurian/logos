@@ -1,0 +1,13 @@
+// test_10_assert_fact.logos — assert-fact then query
+
+Person:
+  role: Text
+
+setup(S, P, V) if:
+  assert-fact(S, P, V)
+
+has-role(P) if:
+  P.role = "admin"
+
+query: setup("alice", "role", "admin")?
+query: has-role(alice)?

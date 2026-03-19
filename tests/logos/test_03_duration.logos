@@ -1,0 +1,20 @@
+// test_03_duration.logos — duration comparison (18 years threshold)
+
+Person:
+  age: Duration
+
+age of alice := 20 years
+  confidence: absolute
+
+age of bob := 16 years
+  confidence: absolute
+
+age of carol := 18 years
+  confidence: absolute
+
+eligible(P) if:
+  P.age >= 18 years
+
+query: eligible(alice)?
+query: eligible(bob)?
+query: eligible(carol)?

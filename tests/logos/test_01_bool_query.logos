@@ -1,0 +1,17 @@
+// test_01_bool_query.logos — basic facts, inference rule, bool query
+
+Person:
+  name: HumanName
+  age: Duration
+
+age of alice := 30 years
+  confidence: absolute
+
+age of bob := 17 years
+  confidence: absolute
+
+adult(P) if:
+  P.age >= 18 years
+
+query: adult(alice)?
+query: adult(bob)?

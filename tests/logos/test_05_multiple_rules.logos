@@ -1,0 +1,33 @@
+// test_05_multiple_rules.logos — multiple clauses (disjunction)
+
+Person:
+  age: Duration
+  citizenship: Text
+
+age of alice := 30 years
+  confidence: absolute
+
+citizenship of alice := "US"
+  confidence: absolute
+
+age of bob := 17 years
+  confidence: absolute
+
+citizenship of bob := "US"
+  confidence: absolute
+
+age of carol := 25 years
+  confidence: absolute
+
+citizenship of carol := "CA"
+  confidence: absolute
+
+can-vote(P) if:
+  P.age >= 18 years
+  P.citizenship = "US"
+
+query: can-vote(alice)?
+query: can-vote(bob)?
+query: can-vote(carol)?
+
+find P where can-vote(P)

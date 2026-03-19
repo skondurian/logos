@@ -1,0 +1,14 @@
+// logos/interpret-main.logos — self-hosted interpreter entry point
+//
+// Usage: logos_interpret <file.logos>
+
+import * from "interpreter"
+
+interpret-main("done") if:
+  argv(1, FilePath)
+  interpret(FilePath)
+
+interpret-main("done") if:
+  write-stderr("usage: logos_interpret <file.logos>\n")
+
+query: interpret-main("done")?

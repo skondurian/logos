@@ -1,0 +1,12 @@
+// test_09_var_compare.logos — variable comparisons (X > Y in rule body)
+
+greater(X, Y) if:
+  X > Y
+
+at-least(X, Y) if:
+  X >= Y
+
+query: greater(10.0, 5.0)?
+query: greater(3.0, 7.0)?
+query: at-least(5.0, 5.0)?
+query: at-least(4.0, 5.0)?

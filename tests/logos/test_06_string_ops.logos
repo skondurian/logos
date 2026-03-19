@@ -1,0 +1,14 @@
+// test_06_string_ops.logos — str-concat, str-concat3 from stdlib/strings
+
+import * from "../../logos/stdlib/lists"
+import * from "../../logos/stdlib/strings"
+
+greet(Name, Result) if:
+  str-concat3("Hello, ", Name, "!", Result)
+
+query: greet("world", "Hello, world!")?
+
+full-name(First, Last, Full) if:
+  str-concat3(First, " ", Last, Full)
+
+query: full-name("Alice", "Smith", "Alice Smith")?

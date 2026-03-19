@@ -1,0 +1,2 @@
+greet("world", "Hello, world!"): true  [confidence: 0.902]
+full-name("Alice", "Smith", "Alice Smith"): true  [confidence: 0.902]

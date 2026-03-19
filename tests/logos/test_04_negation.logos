@@ -1,0 +1,23 @@
+// test_04_negation.logos — negation as failure
+
+Person:
+  name: HumanName
+  banned: Text
+
+name of alice := "Alice"
+  confidence: absolute
+
+name of bob := "Bob"
+  confidence: absolute
+
+banned of bob := "yes"
+  confidence: absolute
+
+allowed(P) if:
+  not banned(P)
+
+banned(P) if:
+  P.banned = "yes"
+
+query: allowed(alice)?
+query: allowed(bob)?

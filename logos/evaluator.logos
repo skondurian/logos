@@ -79,8 +79,8 @@ eval-stmt(["skip-type-decl", AnyName])
 // ── Program evaluation ────────────────────────────────────────────────────────
 
 // eval-stmts(Stmts) — evaluate a list of statements
-eval-stmts([]) if:
-  true
+eval-stmts(Empty) if:
+  list-empty(Empty)
 
 eval-stmts(Stmts) if:
   list-cons(Stmt, Rest, Stmts)

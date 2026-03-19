@@ -1,0 +1,4 @@
+has-member(1, [1, 2, 3]): true  [confidence: 0.902]
+has-member(5, [1, 2, 3]): false
+first-is(1, [1, 2, 3]): true  [confidence: 0.950]
+first-is(2, [1, 2, 3]): false

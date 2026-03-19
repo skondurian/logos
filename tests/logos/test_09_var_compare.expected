@@ -1,0 +1,4 @@
+greater(10, 5): true  [confidence: 0.950]
+greater(3, 7): false
+at-least(5, 5): true  [confidence: 0.950]
+at-least(4, 5): false

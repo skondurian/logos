@@ -1,0 +1,14 @@
+// test_08_list_ops.logos — list-cons, list-head, list-member in rule bodies
+
+import * from "../../logos/stdlib/lists"
+
+has-member(X, L) if:
+  list-member(X, L)
+
+first-is(H, L) if:
+  list-head(L, H)
+
+query: has-member(1.0, [1.0, 2.0, 3.0])?
+query: has-member(5.0, [1.0, 2.0, 3.0])?
+query: first-is(1.0, [1.0, 2.0, 3.0])?
+query: first-is(2.0, [1.0, 2.0, 3.0])?

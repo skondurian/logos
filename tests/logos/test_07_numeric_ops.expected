@@ -1,0 +1,2 @@
+add-three(1, 2, 3, 6): true  [confidence: 0.950]
+product(4, 5, 20): true  [confidence: 0.950]

@@ -1,0 +1,2 @@
+setup("alice", "role", "admin"): true  [confidence: 0.950]
+has-role(alice): true  [confidence: 0.950]

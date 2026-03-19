@@ -1,0 +1,11 @@
+// test_07_numeric_ops.logos — num-add, num-mul
+
+add-three(X, Y, Z, R) if:
+  num-add(X, Y, XY)
+  num-add(XY, Z, R)
+
+product(X, Y, P) if:
+  num-mul(X, Y, P)
+
+query: add-three(1.0, 2.0, 3.0, 6.0)?
+query: product(4.0, 5.0, 20.0)?

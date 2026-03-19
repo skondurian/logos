@@ -1,0 +1,19 @@
+// test_02_find_query.logos — find query with variable binding
+
+Person:
+  name: HumanName
+  age: Duration
+
+age of alice := 30 years
+  confidence: absolute
+
+age of bob := 17 years
+  confidence: absolute
+
+age of carol := 25 years
+  confidence: absolute
+
+adult(P) if:
+  P.age >= 18 years
+
+find P where adult(P)

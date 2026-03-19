@@ -1,0 +1,2 @@
+adult(alice): true  [confidence: 0.950]
+adult(bob): false

@@ -1,0 +1,2 @@
+allowed(alice): true  [confidence: 0.950]
+allowed(bob): false

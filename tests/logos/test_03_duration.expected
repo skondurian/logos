@@ -1,0 +1,3 @@
+eligible(alice): true  [confidence: 0.950]
+eligible(bob): false
+eligible(carol): true  [confidence: 0.950]

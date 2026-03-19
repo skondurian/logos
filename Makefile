@@ -2,11 +2,13 @@
 # ──────────────────────────────────────────────────────────────────────────────
 #
 # Targets:
-#   make                build build/logos_compile  (native C-emitter binary)
-#   make install        install logoscc + runtime to PREFIX (default /usr/local)
+#   make                build build/logos_compile + build/logos_interpret
+#   make install        install logoscc + logos_interpret + runtime to PREFIX
 #   make clean          remove build/
-#   make test           run the full test suite
+#   make test           run shell-based integration tests (no Python needed)
+#   make test-python    run old Python pytest suite (requires Python)
 #   make verify         prove compile3==compile4 (self-hosting stability)
+#   make update-bootstrap  regenerate bootstrap/logos_compile.c from current binary
 #
 # Usage after build:
 #   bin/logoscc examples/02_voting_rules.logos -o /tmp/voting
@@ -39,30 +41,57 @@ endif
 
 # ── Primary target ────────────────────────────────────────────────────────────
 
-.PHONY: all bootstrap verify clean install test
+.PHONY: all bootstrap verify clean install test test-python update-bootstrap
 
-all: $(BUILD_DIR)/logos_compile
+all: $(BUILD_DIR)/logos_compile $(BUILD_DIR)/logos_interpret
 
-# ── Step 1: Python bootstrap → stable self-hosted C source ───────────────────
+# ── Step 1: Produce stable self-hosted C source ───────────────────────────────
 #
-# The bootstrap uses the Python codegen to produce a first-gen binary, then
-# self-compiles once to reach the stable fixed point (gen2 == gen3).
+# Priority order (Python-free first):
+#   1. If build/logos_compile binary exists → self-compile (no Python)
+#   2. Else if bootstrap/logos_compile.c exists → copy seed (no Python)
+#   3. Else → Python bootstrap (fallback, requires Python)
 #
 $(BUILD_DIR)/logos_compile.c: $(LOGOS_SRC) $(RUNTIME_SRC) $(RUNTIME_HDR)
 	@mkdir -p $(BUILD_DIR)
-	@echo "[1/3] Bootstrap: Python → $(BUILD_DIR)/logos_bootstrap.c"
-	python3 -m logos compile logos/compile-main.logos \
-	    --keep-c -o $(BUILD_DIR)/logos_bootstrap
-	@echo "[2/3] Self-compile: bootstrap binary → stable C source"
-	$(BUILD_DIR)/logos_bootstrap logos/compile-main.logos \
-	    > $(BUILD_DIR)/logos_compile.c
-	@echo "      Generated: $$(wc -l < $(BUILD_DIR)/logos_compile.c) lines"
+	@if [ -x "$(BUILD_DIR)/logos_compile" ]; then \
+	    echo "[1/3] Self-compile: existing binary → $(BUILD_DIR)/logos_compile.c"; \
+	    $(BUILD_DIR)/logos_compile logos/compile-main.logos \
+	        > $(BUILD_DIR)/logos_compile.c; \
+	    echo "      Generated: $$(wc -l < $(BUILD_DIR)/logos_compile.c) lines"; \
+	elif [ -f "bootstrap/logos_compile.c" ]; then \
+	    echo "[1/3] Seed: bootstrap/logos_compile.c → $(BUILD_DIR)/logos_compile.c"; \
+	    cp bootstrap/logos_compile.c $(BUILD_DIR)/logos_compile.c; \
+	    echo "      Copied: $$(wc -l < $(BUILD_DIR)/logos_compile.c) lines"; \
+	else \
+	    echo "[1/3] Bootstrap: Python → $(BUILD_DIR)/logos_bootstrap.c"; \
+	    python3 -m logos compile logos/compile-main.logos \
+	        --keep-c -o $(BUILD_DIR)/logos_bootstrap; \
+	    echo "[2/3] Self-compile: bootstrap binary → stable C source"; \
+	    $(BUILD_DIR)/logos_bootstrap logos/compile-main.logos \
+	        > $(BUILD_DIR)/logos_compile.c; \
+	    echo "      Generated: $$(wc -l < $(BUILD_DIR)/logos_compile.c) lines"; \
+	fi
 
 # ── Step 2: Compile stable C source → native binary ──────────────────────────
 
 $(BUILD_DIR)/logos_compile: $(BUILD_DIR)/logos_compile.c $(RUNTIME_SRC) $(RUNTIME_HDR)
 	@echo "[3/3] Compile: C → native binary $(BUILD_DIR)/logos_compile"
 	$(CC) $(BUILD_DIR)/logos_compile.c $(RUNTIME_SRC) \
+	    -I$(RUNTIME_DIR) -o $@ $(CFLAGS) $(LDFLAGS)
+	@echo "      OK: $@"
+
+# ── Interpreter binary ────────────────────────────────────────────────────────
+
+$(BUILD_DIR)/logos_interpret.c: logos/interpret-main.logos $(BUILD_DIR)/logos_compile $(LOGOS_SRC)
+	@echo "[int] Compile interpreter: logos/interpret-main.logos → C"
+	$(BUILD_DIR)/logos_compile logos/interpret-main.logos \
+	    > $(BUILD_DIR)/logos_interpret.c
+	@echo "      Generated: $$(wc -l < $(BUILD_DIR)/logos_interpret.c) lines"
+
+$(BUILD_DIR)/logos_interpret: $(BUILD_DIR)/logos_interpret.c $(RUNTIME_SRC) $(RUNTIME_HDR)
+	@echo "[int] Link: $(BUILD_DIR)/logos_interpret"
+	$(CC) $(BUILD_DIR)/logos_interpret.c $(RUNTIME_SRC) \
 	    -I$(RUNTIME_DIR) -o $@ $(CFLAGS) $(LDFLAGS)
 	@echo "      OK: $@"
 
@@ -73,6 +102,15 @@ bootstrap:
 	python3 -m logos compile logos/compile-main.logos \
 	    --keep-c -o $(BUILD_DIR)/logos_bootstrap
 	@echo "Bootstrap binary: $(BUILD_DIR)/logos_bootstrap"
+
+# ── Update bootstrap seed from current binary ─────────────────────────────────
+
+update-bootstrap: $(BUILD_DIR)/logos_compile
+	@echo "Regenerating bootstrap/logos_compile.c from current binary..."
+	@mkdir -p bootstrap
+	$(BUILD_DIR)/logos_compile logos/compile-main.logos \
+	    > bootstrap/logos_compile.c
+	@echo "Updated: bootstrap/logos_compile.c ($$(wc -l < bootstrap/logos_compile.c) lines)"
 
 # ── Verify self-hosting stability (gen3 == gen4) ─────────────────────────────
 
@@ -90,20 +128,25 @@ INSTALL_BIN     = $(PREFIX)/bin
 INSTALL_LIB     = $(PREFIX)/lib/logos
 INSTALL_RUNTIME = $(INSTALL_LIB)/runtime
 
-install: $(BUILD_DIR)/logos_compile
+install: $(BUILD_DIR)/logos_compile $(BUILD_DIR)/logos_interpret
 	@echo "Installing to $(PREFIX)..."
 	install -d $(INSTALL_BIN) $(INSTALL_RUNTIME)
 	install -m755 $(BUILD_DIR)/logos_compile $(INSTALL_LIB)/logos_compile
+	install -m755 $(BUILD_DIR)/logos_interpret $(INSTALL_BIN)/logos_interpret
 	install -m644 $(RUNTIME_SRC) $(RUNTIME_HDR) $(INSTALL_RUNTIME)/
 	sed "s|__LOGOS_LIB__|$(INSTALL_LIB)|g" bin/logoscc \
 	    > $(INSTALL_BIN)/logoscc
 	chmod 755 $(INSTALL_BIN)/logoscc
 	@echo "Installed: $(INSTALL_BIN)/logoscc"
 	@echo "           $(INSTALL_LIB)/logos_compile"
+	@echo "           $(INSTALL_BIN)/logos_interpret"
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
 
 test:
+	tests/run_tests.sh
+
+test-python:
 	python3 -m pytest tests/ -q
 
 # ── Clean ─────────────────────────────────────────────────────────────────────
